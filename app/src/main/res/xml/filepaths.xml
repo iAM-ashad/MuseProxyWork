@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- our generatePcgPdf saves under getExternalFilesDir(DIRECTORY_DOCUMENTS) by default -->
+    <external-files-path name="docs" path="Documents/" />
+    <!-- plus internal files (if you switch output or copy assets) -->
+    <files-path name="internal" path="." />
+</paths>
