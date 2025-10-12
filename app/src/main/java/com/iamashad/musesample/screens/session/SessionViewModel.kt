@@ -1,19 +1,19 @@
 package com.iamashad.musesample.screens.session
 
 import androidx.compose.runtime.mutableStateListOf
-import com.iamashad.musesample.ViewModel
-import com.iamashad.musesample.model.SessionItem
+import androidx.lifecycle.ViewModel
+import com.iamashad.musesample.model.Session
 
 class SessionListViewModel : ViewModel() {
-    private val _sessions = mutableStateListOf<SessionItem>()
-    val sessions: List<SessionItem> get() = _sessions
+    private val _sessions = mutableStateListOf<Session>()
+    val sessions: List<Session> get() = _sessions
 
     init {
         // Dummy seed data for week-1 demo
-        _sessions.addAll(demoSessions())
+        _sessions.addAll(listOf())
     }
 
-    fun addSession(session: SessionItem) {
+    fun addSession(session: Session) {
         _sessions.add(0, session) // add new ones to the top
     }
 

@@ -6,61 +6,6 @@ import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.min
 
-// ───────────────────────────────
-// Read 16-bit PCM data from WAV
-// ───────────────────────────────
-/*fun readWavPcm16(wavFile: File): List<Float> {
-    val bytes = wavFile.readBytes()
-    require(bytes.size > 44) { "Invalid or too small WAV file" }
-
-    var pos = 12 // skip RIFF header
-    var dataStart = -1
-    var dataSize = 0
-    val header = wavFile.readBytes().take(64)
-    Log.d("DebugAttempt1", header.joinToString(" ") { "%02X".format(it) })
-
-    while (pos + 8 <= bytes.size) {
-        if (pos + 8 > bytes.size) break
-        val chunkId = try {
-            String(bytes, pos, 4)
-        } catch (_: Exception) {
-            break
-        }
-        val chunkSize = if (pos + 8 <= bytes.size) {
-            (bytes[pos + 4].toInt() and 0xFF) or
-                    ((bytes[pos + 5].toInt() and 0xFF) shl 8) or
-                    ((bytes[pos + 6].toInt() and 0xFF) shl 16) or
-                    ((bytes[pos + 7].toInt() and 0xFF) shl 24)
-        } else 0
-
-        pos += 8
-        if (chunkId == "data") {
-            dataStart = pos
-            dataSize = chunkSize.coerceAtMost(bytes.size - pos)
-            break
-        } else {
-            // Skip safely within bounds
-            val safeSkip = chunkSize.coerceAtMost(bytes.size - pos)
-            pos += safeSkip
-        }
-    }
-
-    require(dataStart > 0 && dataSize > 0 && dataStart + dataSize <= bytes.size) {
-        "Invalid WAV: no data chunk found"
-    }
-
-    val pcm = mutableListOf<Float>()
-    var i = dataStart
-    val end = (dataStart + dataSize).coerceAtMost(bytes.size)
-    while (i + 1 < end) {
-        val lo = bytes[i].toInt() and 0xFF
-        val hi = bytes[i + 1].toInt()
-        val sample = (hi shl 8 or lo)
-        pcm.add(sample.toShort().toFloat())
-        i += 2
-    }
-    return pcm
-}*/
 fun readWavPcm16(wavFile: File, numChannels: Int): List<Float> {
     val bytes = wavFile.readBytes()
     require(bytes.size > 44) { "Invalid or too small WAV file" }
@@ -155,28 +100,6 @@ fun bandpassFilter(
     return filtered
 }
 
-/*fun downsampleWaveform(samples: List<Float>, target: Int): List<Float> {
-    if (samples.isEmpty()) return emptyList()
-    val n = samples.size
-    if (n <= target) return samples
-
-    val bucket = n.toFloat() / target
-    val out = ArrayList<Float>(target)
-    var start = 0f
-
-    for (i in 0 until target) {
-        val s = start.toInt()
-        val e = min(n, ceil(start + bucket).toInt())
-        var avg = 0f
-        for (j in s until e) avg += samples[j]
-        out.add(avg / (e - s))
-        start += bucket
-    }
-
-    val maxAbs = out.maxOf { abs(it) }.coerceAtLeast(1f)
-    return out.map { (it / maxAbs) * 1000f }
-}
-*/
 fun downsampleWaveform(samples: List<Float>, targetCount: Int): List<Float> {
     if (samples.isEmpty() || samples.size <= targetCount) {
         // Normalize the existing data if it's already small enough

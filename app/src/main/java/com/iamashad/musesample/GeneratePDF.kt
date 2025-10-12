@@ -2,33 +2,24 @@ package com.iamashad.musesample
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
 import android.os.Build
 import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.util.Base64
 import android.util.Log
-import android.view.View
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import androidx.annotation.RequiresApi
-import androidx.core.graphics.createBitmap
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
-import com.github.mikephil.charting.charts.LineChart
-import com.github.mikephil.charting.components.Description
-import com.github.mikephil.charting.components.XAxis
-import com.github.mikephil.charting.data.Entry
-import com.github.mikephil.charting.data.LineData
-import com.github.mikephil.charting.data.LineDataSet
 import com.iamashad.musesample.audio.bandpassFilter
 import com.iamashad.musesample.audio.downsampleWaveform
 import com.iamashad.musesample.audio.readNumChannels
 import com.iamashad.musesample.audio.readSampleRate
 import com.iamashad.musesample.audio.readWavPcm16
 import com.iamashad.musesample.model.PcgReportMeta
+import com.iamashad.musesample.print.buildStackedPcgBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -36,79 +27,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.time.format.DateTimeFormatter
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-// ───────────────────────────────
-// Core PCG waveform renderer
-// ───────────────────────────────
 /*
-fun buildPcgWaveformBitmap(
-    context: Context,
-    normalized: List<Float>,
-    secondsTotal: Float,
-    widthPx: Int = 1800,
-    heightPx: Int = 700
-): Bitmap {
-    val chart = LineChart(context).apply {
-        layoutParams = android.view.ViewGroup.LayoutParams(widthPx, heightPx)
-        setBackgroundColor(Color.WHITE)
-        description = Description().apply { text = "" }
-        legend.isEnabled = false
-        setTouchEnabled(false)
-        setPinchZoom(false)
-        axisRight.isEnabled = false
-
-        // X axis (time)
-        xAxis.apply {
-            position = XAxis.XAxisPosition.BOTTOM
-            setDrawGridLines(true)
-            gridColor = Color.LTGRAY
-            textColor = Color.DKGRAY
-            textSize = 10f
-        }
-
-        // Y axis (amplitude)
-        axisLeft.apply {
-            setDrawGridLines(true)
-            gridColor = Color.LTGRAY
-            textColor = Color.DKGRAY
-            textSize = 10f
-            axisMinimum = -1100f
-            axisMaximum = 1100f
-        }
-    }
-
-    val entries = normalized.mapIndexed { i, y ->
-        val x = if (normalized.size <= 1) 0f else i * (secondsTotal / (normalized.size - 1))
-        Entry(x, y)
-    }
-
-    val dataSet = LineDataSet(entries, "PCG").apply {
-        setDrawCircles(false)
-        setDrawValues(false)
-        lineWidth = 1.3f
-        color = Color.BLACK
-        mode = LineDataSet.Mode.CUBIC_BEZIER
-    }
-
-    chart.data = LineData(dataSet)
-    chart.xAxis.axisMinimum = 0f
-    chart.xAxis.axisMaximum = maxOf(secondsTotal, 1f)
-
-    // Layout offscreen
-    val wSpec = View.MeasureSpec.makeMeasureSpec(widthPx, View.MeasureSpec.EXACTLY)
-    val hSpec = View.MeasureSpec.makeMeasureSpec(heightPx, View.MeasureSpec.EXACTLY)
-    chart.measure(wSpec, hSpec)
-    chart.layout(0, 0, widthPx, heightPx)
-
-    val bmp = createBitmap(widthPx, heightPx)
-    val canvas = Canvas(bmp)
-    chart.draw(canvas)
-    return bmp
-}*/
-// In your main file
 fun buildPcgWaveformBitmap(
     context: Context,
     normalized: List<Float>,
@@ -116,7 +38,10 @@ fun buildPcgWaveformBitmap(
     widthPx: Int = 1800,
     heightPx: Int = 700
 ): Bitmap {
-    Log.d("PCG_DEBUG", "buildPcgWaveformBitmap: secondsTotal=$secondsTotal, normalized.size=${normalized.size}")
+    Log.d(
+        "PCG_DEBUG",
+        "buildPcgWaveformBitmap: secondsTotal=$secondsTotal, normalized.size=${normalized.size}"
+    )
 
     val chart = LineChart(context).apply {
         layoutParams = android.view.ViewGroup.LayoutParams(widthPx, heightPx)
@@ -149,7 +74,10 @@ fun buildPcgWaveformBitmap(
 
     val numPoints = normalized.size
     val numTimeSteps = (numPoints / 2).coerceAtLeast(1) // Ensure at least 1 for division
-    Log.d("PCG_DEBUG", "buildPcgWaveformBitmap: numPoints=${numPoints}, numTimeSteps=${numTimeSteps}")
+    Log.d(
+        "PCG_DEBUG",
+        "buildPcgWaveformBitmap: numPoints=${numPoints}, numTimeSteps=${numTimeSteps}"
+    )
 
     val entries = normalized.mapIndexed { i, y ->
         val segmentIndex = i / 2
@@ -186,6 +114,7 @@ fun buildPcgWaveformBitmap(
     chart.draw(canvas)
     return bmp
 }
+*/
 
 // ───────────────────────────────
 // Bitmap → Base64 PNG
@@ -200,76 +129,107 @@ fun bitmapToBase64Png(bmp: Bitmap, quality: Int = 100): String {
 // HTML template for the PDF report
 // ───────────────────────────────
 @RequiresApi(Build.VERSION_CODES.O)
-fun buildHtml(meta: PcgReportMeta, base64Png: String): String {
-    val logoUrl = "https://appassets.androidplatform.net/res/drawable/muse_logo.png"
-
-    return """
+fun buildHtml(meta: PcgReportMeta, base64Png: String): String = """
     <!doctype html>
     <html>
       <head>
         <meta charset="utf-8"/>
         <style>
-          body { font-family: -apple-system, Roboto, "Segoe UI", Arial, sans-serif; margin: 40px; color: #222; }
-          .header { display:flex; justify-content:space-between; align-items:center; margin-bottom: 24px; }
-          .logo img { height: 90px; }
+          @page { size: A4; margin: 18mm; }
+          * { box-sizing: border-box; }
+          body { font-family: -apple-system, Roboto, "Segoe UI", Arial, sans-serif; color:#222; margin:0; }
+          .page { page-break-after: always; }
+    
+          /* Header */
+          .header { display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; }
+          .logo img { height:192px; }
           .title-block { text-align:right; }
-          .title { font-size:22px; font-weight:700; color:#004d99; }
-          .meta { font-size:11px; color:#555; }
-          .card { border:1px solid #ddd; border-radius:10px; padding:20px; margin-top:16px; background:#fafafa; }
+          .title { font-size:44px; font-weight:800; color:#0b4da2; }
+          .meta  { font-size:20px; color:#555; }
+    
+          /* Cards & tables */
+          .card { border:1.4px solid #d1d5db; border-radius:12px; padding:18px; background:#fafafa; }
+          h3 { font-size:24px; margin:14px 0 10px; color:#0b4da2; border-bottom:1px solid #e5e7eb; padding-bottom:4px; }
+          .section { margin-top:16px; }
           table { border-collapse:collapse; width:100%; }
-          th, td { padding:6px 8px; border-bottom:1px solid #eee; font-size:13px; }
-          th { text-align:left; color:#555; font-weight:600; width:30%; }
-          h3 { font-size:16px; margin-top:20px; color:#004d99; }
-          .wave { text-align:center; margin-top:20px; }
-          .wave img { max-width:100%; height:auto; border:1px solid #bbb; border-radius:6px; }
-          .footer { margin-top:40px; font-size:10px; text-align:center; color:#666; }
+          th, td { padding:8px 10px; border-bottom:1px solid #eee; font-size:20px; }
+          th { text-align:left; color:#555; font-weight:600; width:36%; }
+    
+          .two-col { display:flex; gap:16px; }
+          .two-col .card { flex:1; }
+    
+          .footer { margin-top:28px; font-size:20px; text-align:center; color:#666; }
+    
+          /* PAGE 2: waveform */
+          .page-break { page-break-before:always; }
+          .wave-wrapper { display:flex; justify-content:center; align-items:flex-start; min-height:245mm; }
+          .wave-card {
+            border:2px solid #b0c4de; border-radius:12px; padding:12px; background:#fff;
+            max-width:300mm; width:100%; margin:0 auto; box-shadow:0 2mm 4mm rgba(0,0,0,0.10);
+          }
+          .wave-title { font-size:24px; font-weight:700; text-align:center; color:#0b4da2; margin:8px 0 12px; }
+          .wave img { display:block; margin:0 auto; width:100%; height:auto; }
         </style>
       </head>
       <body>
-        <div class="header">
-          <div class="logo">
-            <img src="$logoUrl" alt="Company Logo"/>
+    
+        <!-- PAGE 1 -->
+        <div class="page">
+          <div class="header">
+            <div class="logo">
+              <img src="https://appassets.androidplatform.net/res/drawable/muse_logo.png" alt="Clinic Logo"/>
+            </div>
+            <div class="title-block">
+              <div class="title">PCG Session Report</div>
+              <div class="meta">Generated: ${
+    java.time.LocalDateTime.now()
+        .format(java.time.format.DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm"))
+}</div>
+            </div>
           </div>
-          <div class="title-block">
-            <div class="title">PCG Session Report</div>
-            <div class="meta">Generated: ${
-        java.time.LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm"))
-    }</div>
+    
+          <div class="two-col">
+            <div class="card">
+              <h3>Patient Information</h3>
+              <table>
+                <tr><th>Name</th><td>${meta.patientName} (ID: ${meta.patientId})</td></tr>
+                <tr><th>Age</th><td>${meta.age.ifBlank { "—" }}</td></tr>
+                <tr><th>Sex</th><td>${meta.sex.ifBlank { "—" }}</td></tr>
+                <tr><th>Height</th><td>${meta.height.ifBlank { "—" }}</td></tr>
+                <tr><th>Weight</th><td>${meta.weight.ifBlank { "—" }}</td></tr>
+                <tr><th>BMI</th><td>${meta.bmi.ifBlank { "—" }}</td></tr>
+                <tr><th>Posture / Position</th><td>${meta.posture.ifBlank { "—" }}</td></tr>
+              </table>
+            </div>
+    
+            <div class="card">
+              <h3>Session Details</h3>
+              <table>
+                <tr><th>Session Start</th><td>${meta.sessionStart}</td></tr>
+                <tr><th>Device</th><td>${meta.deviceModel}</td></tr>
+                <tr><th>Notes</th><td>${meta.notes.ifBlank { "—" }}</td></tr>
+              </table>
+            </div>
+          </div>
+    
+          <div class="footer">
+            © ${java.time.Year.now()} Muse Diagnostics — Phonocardiogram Analysis Report.
           </div>
         </div>
-
-        <div class="card">
-          <h3>Patient Information</h3>
-          <table>
-            <tr><th>Name</th><td>${meta.patientName} (ID: ${meta.patientId})</td></tr>
-            <tr><th>Age</th><td>${meta.age}</td></tr>
-            <tr><th>Sex</th><td>${meta.sex}</td></tr>
-            <tr><th>Height</th><td>${meta.height}</td></tr>
-            <tr><th>Weight</th><td>${meta.weight}</td></tr>
-            <tr><th>BMI</th><td>${meta.bmi}</td></tr>
-            <tr><th>Posture / Position</th><td>${meta.posture}</td></tr>
-          </table>
-
-          <h3>Session Details</h3>
-          <table>
-            <tr><th>Session Start</th><td>${meta.sessionStart}</td></tr>
-            <tr><th>Device</th><td>${meta.deviceModel}</td></tr>
-            <tr><th>Notes</th><td>${meta.notes}</td></tr>
-          </table>
-
-          <div class="wave">
-            <h3>Recorded Waveform</h3>
-            <img alt="PCG Waveform" src="data:image/png;base64,$base64Png" />
+    
+        <!-- PAGE 2 (waveform only) -->
+        <div class="page-break">
+          <div class="wave-wrapper">
+            <div class="wave-card">
+              <div class="wave-title">PHONOCARDIOGRAM</div>
+              <img alt="PCG Waveform" src="data:image/png;base64,$base64Png"/>
+            </div>
           </div>
         </div>
-
-        <div class="footer">
-          © ${java.time.Year.now()} Your Clinic. Clinical Study – Internal Use Only.
-        </div>
+    
       </body>
     </html>
     """.trimIndent()
-}
 
 
 suspend fun htmlToPdf(
@@ -342,9 +302,6 @@ suspend fun htmlToPdf(
     }
 }
 
-// ───────────────────────────────
-// File helpers + generator entrypoint
-// ───────────────────────────────
 private fun defaultPdfLocation(context: Context): File {
     val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
     return File(dir, "PCG_Report_${System.currentTimeMillis()}.pdf")
@@ -366,7 +323,10 @@ suspend fun generatePcgPdf(
     val sampleRate = readSampleRate(file)
     val numChannels = readNumChannels(file)
     val t1 = System.currentTimeMillis()
-    Log.d("PCG_DEBUG", "Sample rate read in ${t1 - t0} ms. SampleRate: $sampleRate Hz, Channels: $numChannels")
+    Log.d(
+        "PCG_DEBUG",
+        "Sample rate read in ${t1 - t0} ms. SampleRate: $sampleRate Hz, Channels: $numChannels"
+    )
 
     // THIS IS THE CRITICAL CALL - ensure numChannels is passed
     val pcm = readWavPcm16(file, numChannels)
@@ -374,8 +334,8 @@ suspend fun generatePcgPdf(
     Log.d("PCG_DEBUG", "PCM read in ${t2 - t1} ms. Raw PCM size: ${pcm.size} samples.")
 
     // Calculate the TRUE duration based on the MONO-extracted PCM size
-    val trueDurationSeconds = pcm.size.toFloat() / sampleRate
-    Log.d("PCG_DEBUG", "Calculated true audio duration: $trueDurationSeconds seconds.")
+    val totalDuration = pcm.size.toFloat() / sampleRate
+    Log.d("PCG_DEBUG", "Calculated true audio duration: $totalDuration seconds.")
 
 
     val filtered = bandpassFilter(pcm, sampleRate)
@@ -385,10 +345,22 @@ suspend fun generatePcgPdf(
     val targetDownsampledPoints = 3200 // Aim for ~1600 peaks/troughs
     val normalized = downsampleWaveform(filtered, targetDownsampledPoints)
     val t4 = System.currentTimeMillis()
-    Log.d("PCG_DEBUG", "Downsample done in ${t4 - t3} ms. Normalized size: ${normalized.size} points.")
+    Log.d(
+        "PCG_DEBUG",
+        "Downsample done in ${t4 - t3} ms. Normalized size: ${normalized.size} points."
+    )
     // Expect normalized.size to be close to targetDownsampledPoints (e.g., 3200)
 
-    val bmp = buildPcgWaveformBitmap(context, normalized, trueDurationSeconds) // Pass trueDurationSeconds
+    val bmp = buildStackedPcgBitmap(
+        context = context,
+        normalized = normalized,
+        secondsTotal = totalDuration,
+        segmentSec = 7.5f,
+        widthPx = 2600,
+        heightPx = 1400,
+        rowSpacingPx = 40
+    )
+
     val t5 = System.currentTimeMillis()
     Log.d("PCG_DEBUG", "Bitmap built in ${t5 - t4} ms.")
 

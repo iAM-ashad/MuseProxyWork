@@ -2,14 +2,13 @@ package com.iamashad.musesample.model
 
 import java.io.File
 
-data class SessionItem(
-    val id: String,
+data class Session(
+    val id: Long = System.currentTimeMillis(),
     val patientName: String,
     val patientId: String,
-    val dateTime: String,
+    val sessionStart: String,
     val deviceModel: String,
     val notes: String,
-    val pdfFile: File?,
-    val audioFile: File?
+    val wavPath: String,
+    val pdfPath: String? = null
 )
-

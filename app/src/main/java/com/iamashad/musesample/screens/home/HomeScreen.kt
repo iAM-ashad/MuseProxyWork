@@ -1,4 +1,4 @@
-package com.iamashad.musesample
+package com.iamashad.musesample.screens.home
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -53,13 +53,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.navigation.NavController
 import com.airbnb.lottie.compose.LottieAnimation
 import com.airbnb.lottie.compose.LottieCompositionSpec
 import com.airbnb.lottie.compose.LottieConstants
 import com.airbnb.lottie.compose.rememberLottieComposition
+import com.iamashad.musesample.ConnectivityStatus
+import com.iamashad.musesample.R
 
 @Composable
-fun HomeScreen(viewModel: ViewModel) {
+fun HomeScreen(
+    navController: NavController,
+    viewModel: HomeViewModel) {
     val connectionState by viewModel.connectivityStatus.collectAsState()
     var showDeviceDialog by remember { mutableStateOf(false) }
 
@@ -126,7 +131,6 @@ fun HomeScreen(viewModel: ViewModel) {
 
                 Spacer(Modifier.height(16.dp))
 
-                // 🔴🟢 Small Connection Indicator Card
                 ConnectionStateCard(connectionState)
 
                 Spacer(Modifier.height(12.dp))
@@ -148,7 +152,7 @@ fun HomeScreen(viewModel: ViewModel) {
         StartSessionButton(
             isEnabled = connectionState is ConnectivityStatus.Connected
         ) {
-            // TODO: Navigate to metadata / recording screen
+            navController.navigate("record")
         }
 
         // Footer

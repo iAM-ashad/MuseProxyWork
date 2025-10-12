@@ -1,13 +1,14 @@
-package com.iamashad.musesample
+package com.iamashad.musesample.screens.home
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.iamashad.musesample.ConnectivityStatus
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-open class ViewModel : ViewModel() {
+class HomeViewModel : ViewModel() {
 
     private val _connectivityStatus =
         MutableStateFlow<ConnectivityStatus>(ConnectivityStatus.Disconnected)

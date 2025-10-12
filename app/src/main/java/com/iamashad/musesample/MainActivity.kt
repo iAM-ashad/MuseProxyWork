@@ -6,9 +6,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.RequiresApi
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.iamashad.musesample.navigation.AppNavigation
 import com.iamashad.musesample.print.TestPcgScreen
-import com.iamashad.musesample.screens.session.SessionListScreen
-import com.iamashad.musesample.screens.session.SessionListViewModel
+import com.iamashad.musesample.screens.home.HomeViewModel
+import com.iamashad.musesample.screens.metadata.MetadataViewModel
+import com.iamashad.musesample.screens.record.RecordingViewModel
 import com.iamashad.musesample.ui.theme.MuseSampleTheme
 
 class MainActivity : ComponentActivity() {
@@ -18,11 +21,11 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             MuseSampleTheme {
-                //val viewModel = ViewModel()
-                //HomeScreen(viewModel)
+                /*val homeVM: HomeViewModel = viewModel()
+                val recordingVM: RecordingViewModel = viewModel()
+                val metadataVM: MetadataViewModel = viewModel()
+                AppNavigation(homeVM, recordingVM, metadataVM)*/
                 TestPcgScreen()
-                //val viewModel = SessionListViewModel()
-                //SessionListScreen(viewModel)
             }
         }
     }
