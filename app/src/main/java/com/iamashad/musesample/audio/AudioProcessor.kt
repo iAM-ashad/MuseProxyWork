@@ -39,7 +39,10 @@ fun readWavPcm16(wavFile: File, numChannels: Int): List<Float> {
         }
     }
     // ... (Your chunk parsing loop for 'data' chunk) ...
-    Log.d("PCG_DEBUG", "WAV data chunk found: dataStart=$dataStart, dataSize=$dataSize, bytes.size=${bytes.size}")
+    Log.d(
+        "PCG_DEBUG",
+        "WAV data chunk found: dataStart=$dataStart, dataSize=$dataSize, bytes.size=${bytes.size}"
+    )
 
     require(dataStart > 0 && dataSize > 0 && dataStart + dataSize <= bytes.size) {
         "Invalid WAV: No 'data' chunk found or file corrupted."
@@ -51,7 +54,10 @@ fun readWavPcm16(wavFile: File, numChannels: Int): List<Float> {
 
     val bytesPerSample = 2
     val frameSize = numChannels * bytesPerSample
-    Log.d("PCG_DEBUG", "PCM extraction: numChannels=$numChannels, frameSize=$frameSize bytes, initial i=$i, end=$end")
+    Log.d(
+        "PCG_DEBUG",
+        "PCM extraction: numChannels=$numChannels, frameSize=$frameSize bytes, initial i=$i, end=$end"
+    )
 
     var samplesExtracted = 0
     while (i + bytesPerSample <= end) { // Need at least 2 bytes for a 16-bit sample
@@ -63,9 +69,13 @@ fun readWavPcm16(wavFile: File, numChannels: Int): List<Float> {
 
         i += frameSize // Move 'i' to the start of the NEXT FRAME
     }
-    Log.d("PCG_DEBUG", "Finished PCM extraction. Total samples extracted: $samplesExtracted. Final pcm.size: ${pcm.size}")
+    Log.d(
+        "PCG_DEBUG",
+        "Finished PCM extraction. Total samples extracted: $samplesExtracted. Final pcm.size: ${pcm.size}"
+    )
     return pcm
 }
+
 // ───────────────────────────────
 // Improved band-pass filter 20–500 Hz
 // ───────────────────────────────
@@ -81,8 +91,8 @@ fun bandpassFilter(
     val omegaLow = (2 * Math.PI * lowHz / sampleRate).toFloat()
     val omegaHigh = (2 * Math.PI * highHz / sampleRate).toFloat()
 
-    var yLow = 0f
-    var yHigh = 0f
+    var yLow: Float
+    var yHigh: Float
     var prevLow = 0f
     var prevHigh = samples[0]
     val alphaLow = omegaLow / (omegaLow + 1)

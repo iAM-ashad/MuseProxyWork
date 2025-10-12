@@ -1,7 +1,5 @@
 package com.iamashad.musesample.model
 
-import java.io.File
-
 data class Session(
     val id: Long = System.currentTimeMillis(),
     val patientName: String,

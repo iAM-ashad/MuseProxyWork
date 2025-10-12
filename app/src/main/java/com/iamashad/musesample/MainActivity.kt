@@ -6,12 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.RequiresApi
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.iamashad.musesample.navigation.AppNavigation
 import com.iamashad.musesample.print.TestPcgScreen
-import com.iamashad.musesample.screens.home.HomeViewModel
-import com.iamashad.musesample.screens.metadata.MetadataViewModel
-import com.iamashad.musesample.screens.record.RecordingViewModel
 import com.iamashad.musesample.ui.theme.MuseSampleTheme
 
 class MainActivity : ComponentActivity() {
