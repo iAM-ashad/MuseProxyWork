@@ -128,7 +128,6 @@ fun bitmapToBase64Png(bmp: Bitmap, quality: Int = 100): String {
 // ───────────────────────────────
 // HTML template for the PDF report
 // ───────────────────────────────
-@RequiresApi(Build.VERSION_CODES.O)
 fun buildHtml(meta: PcgReportMeta, base64Png: String): String = """
     <!doctype html>
     <html>
@@ -308,7 +307,6 @@ private fun defaultPdfLocation(context: Context): File {
     return File(dir, "PCG_Report_${System.currentTimeMillis()}.pdf")
 }
 
-@RequiresApi(Build.VERSION_CODES.O)
 suspend fun generatePcgPdf(
     context: Context,
     wavPath: String,

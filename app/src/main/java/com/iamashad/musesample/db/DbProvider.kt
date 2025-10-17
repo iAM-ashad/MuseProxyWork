@@ -7,7 +7,8 @@ import com.iamashad.musesample.security.DbKeyStore
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
 object DbProvider {
-    @Volatile private var instance: AppDatabase? = null
+    @Volatile
+    private var instance: AppDatabase? = null
 
     fun get(context: Context): AppDatabase =
         instance ?: synchronized(this) {
@@ -25,7 +26,7 @@ object DbProvider {
         return Room.databaseBuilder(context, AppDatabase::class.java, dbFile.absolutePath)
             .openHelperFactory(factory)
             .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
-            .fallbackToDestructiveMigrationOnDowngrade()
+            .fallbackToDestructiveMigrationOnDowngrade(false)
             .build()
     }
 }

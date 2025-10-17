@@ -1,7 +1,5 @@
 package com.iamashad.musesample.screens.metadata
 
-import android.os.Build
-import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -15,10 +13,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Notes
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Cake
 import androidx.compose.material.icons.filled.MonitorHeart
-import androidx.compose.material.icons.filled.Notes
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Scale
@@ -58,7 +56,6 @@ import java.time.format.DateTimeFormatter
 import kotlin.math.pow
 
 @OptIn(ExperimentalMaterial3Api::class)
-@RequiresApi(Build.VERSION_CODES.O)
 @Composable
 fun MetadataScreen(
     wavPath: String,
@@ -205,7 +202,7 @@ fun MetadataScreen(
                         )
                         LabeledDropdown(
                             label = "Sex",
-                            options = PatientS3x.values().toList(),
+                            options = PatientS3x.entries,
                             selected = s3x,
                             onSelected = { s3x = it },
                             optionLabel = { it.label },
@@ -265,13 +262,13 @@ fun MetadataScreen(
                     )
                     LabeledDropdown(
                         label = "Posture",
-                        options = Posture.values().toList(),
+                        options = Posture.entries,
                         selected = posture,
                         onSelected = { posture = it },
                         optionLabel = { it.label })
                     LabeledDropdown(
                         label = "Auscultation Position",
-                        options = AuscPosition.values().toList(),
+                        options = AuscPosition.entries,
                         selected = position,
                         onSelected = { position = it },
                         optionLabel = { it.label })
@@ -280,7 +277,7 @@ fun MetadataScreen(
                         onValueChange = { notes = it },
                         label = { Text("Clinician Notes") },
                         placeholder = { Text("Optional observations...") },
-                        leadingIcon = { Icon(Icons.Filled.Notes, null) },
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.Notes, null) },
                         minLines = 3,
                         maxLines = 6,
                         modifier = Modifier.fillMaxWidth()

@@ -405,7 +405,7 @@ private fun fillWindowWrapNormalized(src: FloatArray, out: FloatArray, start: In
 }
 
 /** Clean, stable demo phonocardiogram — no breathing, no modulation */
-private class DemoPhonoEngine(private val baseBpm: Float) {
+private class DemoPhonoEngine(baseBpm: Float) {
     private var beatT = 0f
     private var beatDur = 60f / baseBpm
 

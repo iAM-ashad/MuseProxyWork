@@ -5,6 +5,7 @@ import android.util.Base64
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import java.security.SecureRandom
+import androidx.core.content.edit
 
 object DbKeyStore {
     private const val PREFS = "secure_prefs"
@@ -29,7 +30,7 @@ object DbKeyStore {
 
         val bytes = ByteArray(32) // 256-bit
         SecureRandom().nextBytes(bytes)
-        prefs.edit().putString(KEY, Base64.encodeToString(bytes, Base64.NO_WRAP)).apply()
+        prefs.edit { putString(KEY, Base64.encodeToString(bytes, Base64.NO_WRAP)) }
         return bytes
     }
 }
