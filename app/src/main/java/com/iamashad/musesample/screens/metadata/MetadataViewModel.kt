@@ -8,6 +8,8 @@ import kotlinx.coroutines.launch
 
 class MetadataViewModel : ViewModel() {
     fun saveSession(meta: Session) {
-        viewModelScope.launch { SessionRepository.add(meta) }
+        viewModelScope.launch {
+            SessionRepository.add(meta)
+        }
     }
 }

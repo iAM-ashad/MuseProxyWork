@@ -198,7 +198,8 @@ fun buildHtml(meta: PcgReportMeta, base64Png: String): String = """
                 <tr><th>Height</th><td>${meta.height.ifBlank { "—" }}</td></tr>
                 <tr><th>Weight</th><td>${meta.weight.ifBlank { "—" }}</td></tr>
                 <tr><th>BMI</th><td>${meta.bmi.ifBlank { "—" }}</td></tr>
-                <tr><th>Posture / Position</th><td>${meta.posture.ifBlank { "—" }}</td></tr>
+                <tr><th>Posture</th><td>${meta.posture.ifBlank { "—" }}</td></tr>
+                <tr><th>Position</th><td>${meta.position.ifBlank { "—" }}</td></tr>
               </table>
             </div>
     

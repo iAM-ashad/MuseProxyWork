@@ -1,9 +1,6 @@
 package com.iamashad.musesample.navigation
 
-import android.os.Build
-import androidx.annotation.RequiresApi
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -16,7 +13,6 @@ import com.iamashad.musesample.screens.record.RecordingScreen
 import com.iamashad.musesample.screens.record.RecordingViewModel
 import com.iamashad.musesample.screens.session.SessionListScreen
 
-@RequiresApi(Build.VERSION_CODES.O)
 @Composable
 fun AppNavigation(
     homeViewModel: HomeViewModel,
@@ -24,9 +20,8 @@ fun AppNavigation(
     metadataViewModel: MetadataViewModel
 ) {
     val nav: NavHostController = rememberNavController()
-    val ctx = LocalContext.current
 
-    NavHost(navController = nav, startDestination = Routes.HOME) {
+    NavHost(navController = nav, startDestination = Routes.SESSIONS) {
         composable(Routes.HOME) {
             HomeScreen(
                 nav,
@@ -36,9 +31,11 @@ fun AppNavigation(
         composable(Routes.RECORD) {
             RecordingScreen(
                 vm = recordingViewModel,
-                onStopAndSave = {
-                    val wav = recordingViewModel.lastWavPath()
-                    if (wav != null) nav.navigate("${Routes.META}?wav=$wav")
+                onStopAndSave = { wav ->
+                    val safe = wav ?: recordingViewModel.lastWavPath()
+                    if (!safe.isNullOrEmpty()) {
+                        nav.navigate("${Routes.META}?wav=$safe")
+                    }
                 },
                 onCancel = { nav.popBackStack() }
             )

@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    id("com.google.devtools.ksp") version "2.2.20-2.0.4"
 }
 
 android {
@@ -10,7 +11,7 @@ android {
 
     defaultConfig {
         applicationId = "com.iamashad.musesample"
-        minSdk = 24
+        minSdk = 26
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
@@ -28,11 +29,11 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions {
-        jvmTarget = "11"
+        jvmTarget = "17"
     }
     buildFeatures {
         compose = true
@@ -40,6 +41,19 @@ android {
 }
 
 dependencies {
+
+    implementation("androidx.room:room-runtime:2.8.2")
+    implementation("androidx.room:room-ktx:2.8.2")
+    ksp("androidx.room:room-compiler:2.8.2")
+
+    //sqlcipher
+    implementation("net.zetetic:sqlcipher-android:4.11.0")
+    implementation("androidx.sqlite:sqlite:2.6.1")
+
+
+    // Jetpack Security for EncryptedSharedPreferences (stores DB key; Keystore-backed)
+    implementation("androidx.security:security-crypto:1.1.0")
+
     //webkit
     implementation("androidx.webkit:webkit:1.14.0")
     //lottie
