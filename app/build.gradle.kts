@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -21,7 +23,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -32,8 +35,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_17)
+        }
     }
     buildFeatures {
         compose = true
@@ -42,6 +47,10 @@ android {
 
 dependencies {
 
+    //muse sdk
+    implementation(files("libs/surr-core.aar"))
+
+    //room
     implementation("androidx.room:room-runtime:2.8.2")
     implementation("androidx.room:room-ktx:2.8.2")
     ksp("androidx.room:room-compiler:2.8.2")
@@ -50,6 +59,8 @@ dependencies {
     implementation("net.zetetic:sqlcipher-android:4.11.0")
     implementation("androidx.sqlite:sqlite:2.6.1")
 
+    //compose navigation
+    implementation("androidx.navigation:navigation-compose:2.9.5")
 
     // Jetpack Security for EncryptedSharedPreferences (stores DB key; Keystore-backed)
     implementation("androidx.security:security-crypto:1.1.0")
@@ -59,9 +70,7 @@ dependencies {
     //lottie
     implementation("com.airbnb.android:lottie-compose:6.6.9")
     //icon pack
-    implementation("androidx.compose.material:material-icons-extended-android:1.7.8")
-    //amplituda
-    implementation("com.github.lincollincol:amplituda:2.2.2")
+    implementation("androidx.compose.material:material-icons-core:1.7.8")
     //mpandroidchart
     implementation("com.github.PhilJay:MPAndroidChart:v3.1.0")
     //coroutines

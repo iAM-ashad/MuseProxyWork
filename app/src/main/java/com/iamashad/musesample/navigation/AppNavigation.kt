@@ -1,10 +1,16 @@
 package com.iamashad.musesample.navigation
 
+import android.net.Uri
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.runtime.Composable
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.iamashad.musesample.screens.home.HomeScreen
 import com.iamashad.musesample.screens.home.HomeViewModel
 import com.iamashad.musesample.screens.metadata.MetadataScreen
@@ -21,12 +27,19 @@ fun AppNavigation(
 ) {
     val nav: NavHostController = rememberNavController()
 
-    NavHost(navController = nav, startDestination = Routes.SESSIONS) {
+    val enter = fadeIn(animationSpec = tween(durationMillis = 220, delayMillis = 90))
+    val exit = fadeOut(animationSpec = tween(durationMillis = 90))
+
+    NavHost(
+        navController = nav,
+        startDestination = Routes.HOME,
+        enterTransition = { enter },
+        exitTransition = { exit },
+        popEnterTransition = { enter },
+        popExitTransition = { exit }
+    ) {
         composable(Routes.HOME) {
-            HomeScreen(
-                nav,
-                homeViewModel
-            )
+            HomeScreen(nav, homeViewModel)
         }
         composable(Routes.RECORD) {
             RecordingScreen(
@@ -34,14 +47,24 @@ fun AppNavigation(
                 onStopAndSave = { wav ->
                     val safe = wav ?: recordingViewModel.lastWavPath()
                     if (!safe.isNullOrEmpty()) {
-                        nav.navigate("${Routes.META}?wav=$safe")
+                        val encoded = Uri.encode(safe)
+                        nav.navigate("${Routes.META}?wav=$encoded")
                     }
                 },
                 onCancel = { nav.popBackStack() }
             )
         }
-        composable("${Routes.META}?wav={wav}") { backStack ->
-            val wav = backStack.arguments?.getString("wav") ?: ""
+        composable(
+            route = "${Routes.META}?wav={wav}",
+            arguments = listOf(
+                navArgument("wav") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                }
+            )
+        ) { backStack ->
+            val wav = backStack.arguments?.getString("wav")?.let(Uri::decode).orEmpty()
             MetadataScreen(
                 wavPath = wav,
                 onSaved = { nav.navigate(Routes.SESSIONS) },
@@ -49,9 +72,7 @@ fun AppNavigation(
             )
         }
         composable(Routes.SESSIONS) {
-            SessionListScreen(
-                onBack = { nav.popBackStack() }
-            )
+            SessionListScreen(onBack = { nav.popBackStack() })
         }
     }
 }

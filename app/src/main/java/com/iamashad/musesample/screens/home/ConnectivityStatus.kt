@@ -1,4 +1,4 @@
-package com.iamashad.musesample
+package com.iamashad.musesample.screens.home
 
 sealed class ConnectivityStatus {
     object Disconnected : ConnectivityStatus()

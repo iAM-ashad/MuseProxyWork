@@ -1,12 +1,10 @@
 package com.iamashad.musesample.screens.session
 
 import android.content.Intent
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -15,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,32 +21,35 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.IosShare
-import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,12 +59,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
-import androidx.navigation.compose.rememberNavController
+import com.iamashad.musesample.R
 import com.iamashad.musesample.generatePcgPdf
 import com.iamashad.musesample.model.PcgReportMeta
 import com.iamashad.musesample.model.Session
@@ -73,267 +75,566 @@ import java.io.File
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
-// region Main Screen
-
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun SessionListScreen(onBack: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val sessions by SessionRepository.sessions.collectAsState(initial = emptyList())
 
-    // Filters
+    // ⏳ Loading till first emission
+    val sessionsOrNull: List<Session>? by SessionRepository.sessions.collectAsState(initial = null)
+    val isLoading = sessionsOrNull == null
+    val sessions = sessionsOrNull.orEmpty()
+
+    // --- Filters (committed) ---
     var query by remember { mutableStateOf(TextFieldValue("")) }
     var pdfFilter by remember { mutableStateOf(PdfFilter.All) }
     var positionFilter by remember { mutableStateOf("All") }
+    var timeFilter by remember { mutableStateOf(TimeFilter.All) }
+    var sortKey by remember { mutableStateOf(SortKey.Date) }
+    var sortOrder by remember { mutableStateOf(SortOrder.Desc) }
 
-    val uniquePositions: List<String> = remember(sessions) {
+    val uniquePositions = remember(sessions) {
         listOf("All") + sessions.map { it.position }.distinct().sorted()
     }
+    val topPositions = remember(uniquePositions) { uniquePositions.filter { it != "All" }.take(8) }
 
-    val filtered = remember(sessions, query.text, pdfFilter, positionFilter) {
-        sessions.asSequence()
-            .filter { s ->
-                query.text.isBlank() ||
-                        s.patientName.contains(query.text, ignoreCase = true) ||
-                        s.patientId.contains(query.text, ignoreCase = true)
-            }
-            .filter { s ->
-                when (pdfFilter) {
-                    PdfFilter.All -> true
-                    PdfFilter.With -> !s.pdfPath.isNullOrBlank()
-                    PdfFilter.Without -> s.pdfPath.isNullOrBlank()
+    // Bottom sheet
+    val bottomSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var showBottomSheet by remember { mutableStateOf(false) }
+
+    // Multi-select
+    var selectedIds by remember { mutableStateOf(setOf<Long>()) }
+    val selectionMode = selectedIds.isNotEmpty()
+    var showBulkDeleteDialog by remember { mutableStateOf(false) }
+
+    // --- Filtering + sorting ---
+    val today = LocalDate.now()
+    val filtered =
+        remember(sessions, query.text, pdfFilter, positionFilter, timeFilter, sortKey, sortOrder) {
+            sessions
+                .asSequence()
+                .filter { s ->
+                    query.text.isBlank() ||
+                            s.patientName.contains(query.text, ignoreCase = true) ||
+                            s.patientId.contains(query.text, ignoreCase = true)
                 }
-            }
-            .filter { s -> positionFilter == "All" || s.position == positionFilter }
-            .sortedByDescending { it.sessionStart }
-            .toList()
+                .filter { s ->
+                    when (pdfFilter) {
+                        PdfFilter.All -> true
+                        PdfFilter.With -> !s.pdfPath.isNullOrBlank()
+                        PdfFilter.Without -> s.pdfPath.isNullOrBlank()
+                    }
+                }
+                .filter { s -> positionFilter == "All" || s.position == positionFilter }
+                .filter { s ->
+                    when (timeFilter) {
+                        TimeFilter.All -> true
+                        TimeFilter.Last7 -> isWithinDays(s.sessionStart, 7, today)
+                        TimeFilter.Last30 -> isWithinDays(s.sessionStart, 30, today)
+                    }
+                }
+                .toList()
+                .let { list ->
+                    val sorted = when (sortKey) {
+                        SortKey.Date -> list.sortedWith(compareBy { it.sessionStart })
+                        SortKey.Name -> list.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.patientName })
+                        SortKey.Position -> list.sortedBy { it.position }
+                        SortKey.Pdf -> list.sortedBy { it.pdfPath.isNullOrBlank() } // with-PDF first
+                    }
+                    if (sortOrder == SortOrder.Desc) sorted.reversed() else sorted
+                }
+        }
+
+    // Prune selected when filtered list changes
+    LaunchedEffect(filtered) {
+        val currentIds: Set<Long> = filtered.map { it.id }.toSet()
+        selectedIds = selectedIds intersect currentIds
     }
+
+    // --- Bulk actions ---
+    fun shareSelected() {
+        val files = filtered
+            .filter { it.id in selectedIds }
+            .mapNotNull { it.pdfPath }
+            .map(::File)
+            .filter { it.exists() }
+        if (files.isEmpty()) return
+
+        val uris = files.map {
+            FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", it)
+        }
+
+        val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+            type = "application/pdf"
+            putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        ctx.startActivity(Intent.createChooser(intent, "Share PDFs"))
+    }
+
+    fun deleteSelected() {
+        val targets = filtered.filter { it.id in selectedIds }
+        targets.forEach { SessionRepository.delete(it) }
+        selectedIds = emptySet()
+    }
+
+    val isFiltered =
+        query.text.isNotBlank() ||
+                pdfFilter != PdfFilter.All ||
+                positionFilter != "All" ||
+                timeFilter != TimeFilter.All ||
+                sortKey != SortKey.Date || sortOrder != SortOrder.Desc
 
     Scaffold(
         topBar = {
-            CenterAlignedTopAppBar(
-                title = { Text("Session History") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Default.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { query = TextFieldValue("") }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Clear Filters")
-                    }
-                }
-            )
-        }
-    ) { pad ->
-        Column(
-            Modifier
-                .fillMaxSize()
-                .padding(pad)
-                .padding(horizontal = 16.dp)
-        ) {
-            // 🔍 Search & Filters
-            SessionFilterBar(
-                query = query,
-                onQueryChange = { query = it },
-                pdfFilter = pdfFilter,
-                onPdfFilterChange = { pdfFilter = it },
-                positionFilter = positionFilter,
-                onPositionFilterChange = { positionFilter = it },
-                positionOptions = uniquePositions
-            )
-
-            Spacer(Modifier.height(16.dp))
-
-            AnimatedVisibility(
-                visible = filtered.isEmpty(),
-                enter = fadeIn(),
-                exit = fadeOut()
-            ) {
-                EmptyState()
-            }
-
-            if (filtered.isNotEmpty()) {
-                val grouped =
-                    filtered.groupBy { parseToLocalDate(it.sessionStart) ?: LocalDate.MIN }
-                        .toSortedMap(compareByDescending { it })
-
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    contentPadding = PaddingValues(bottom = 24.dp)
-                ) {
-                    grouped.forEach { (day, list) ->
-                        stickyHeader {
-                            val dayStr =
-                                if (day == LocalDate.MIN) "Undated" else day.format(
-                                    DateTimeFormatter.ofPattern("EEE, dd MMM yyyy")
-                                )
-                            Surface(
-                                color = MaterialTheme.colorScheme.surface,
-                                tonalElevation = 2.dp,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    text = dayStr,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(vertical = 6.dp, horizontal = 8.dp)
-                                )
-                            }
-                        }
-                        items(list, key = { it.id }) { s ->
-                            SessionCard(
-                                session = s,
-                                onPlay = {
-                                    val wav = File(s.wavPath)
-                                    if (!wav.exists()) return@SessionCard
-                                    val uri = FileProvider.getUriForFile(
-                                        ctx,
-                                        "${ctx.packageName}.fileprovider",
-                                        wav
-                                    )
-                                    ctx.startActivity(Intent(Intent.ACTION_VIEW).apply {
-                                        setDataAndType(uri, "audio/wav")
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    })
-                                },
-                                onGeneratePdf = {
-                                    scope.launch {
-                                        val pdf = generatePcgPdf(
-                                            context = ctx,
-                                            wavPath = s.wavPath,
-                                            meta = PcgReportMeta(
-                                                patientName = s.patientName,
-                                                patientId = s.patientId,
-                                                sessionStart = s.sessionStart,
-                                                deviceModel = s.deviceModel,
-                                                notes = s.notes,
-                                                age = s.age,
-                                                sex = s.sex,
-                                                height = s.height,
-                                                weight = s.weight,
-                                                bmi = s.bmi,
-                                                posture = s.posture,
-                                                position = s.position
-                                            )
-                                        )
-                                        SessionRepository.updatePdf(s.id, pdf.absolutePath)
-                                    }
-                                },
-                                onOpenPdf = {
-                                    s.pdfPath?.let { path ->
-                                        val file = File(path)
-                                        if (file.exists()) {
-                                            val uri = FileProvider.getUriForFile(
-                                                ctx,
-                                                "${ctx.packageName}.fileprovider",
-                                                file
-                                            )
-                                            ctx.startActivity(Intent(Intent.ACTION_VIEW).apply {
-                                                setDataAndType(uri, "application/pdf")
-                                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                            })
-                                        }
-                                    }
-                                },
-                                onSharePdf = {
-                                    s.pdfPath?.let { path ->
-                                        val file = File(path)
-                                        if (file.exists()) {
-                                            val uri = FileProvider.getUriForFile(
-                                                ctx,
-                                                "${ctx.packageName}.fileprovider",
-                                                file
-                                            )
-                                            ctx.startActivity(Intent(Intent.ACTION_SEND).apply {
-                                                type = "application/pdf"
-                                                putExtra(Intent.EXTRA_STREAM, uri)
-                                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                            })
-                                        }
-                                    }
-                                },
-                                onDelete = { SessionRepository.delete(s) }
+            if (selectionMode) {
+                CenterAlignedTopAppBar(
+                    title = { Text("${selectedIds.size} selected") },
+                    navigationIcon = {
+                        IconButton(onClick = { selectedIds = emptySet() }) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Exit selection"
                             )
                         }
+                    },
+                    actions = {
+                        val allIds: Set<Long> = filtered.map { it.id }.toSet()
+                        val allSelected = selectedIds.size == allIds.size && allIds.isNotEmpty()
+                        IconButton(onClick = {
+                            selectedIds = if (allSelected) emptySet() else allIds
+                        }) {
+                            Icon(
+                                painter = if (allSelected) painterResource(R.drawable.clear_selection) else painterResource(
+                                    R.drawable.checkbox
+                                ),
+                                contentDescription = if (allSelected) "Clear selection" else "Select all"
+                            )
+                        }
+                        IconButton(
+                            onClick = { shareSelected() },
+                            enabled = filtered.any { it.id in selectedIds && !it.pdfPath.isNullOrBlank() }
+                        ) {
+                            Icon(
+                                painterResource(R.drawable.share),
+                                contentDescription = "Share PDFs"
+                            )
+                        }
+                        IconButton(onClick = { showBulkDeleteDialog = true }) {
+                            Icon(Icons.Filled.Delete, contentDescription = "Delete selected")
+                        }
                     }
-                }
-            }
-        }
-    }
-}
-// endregion
-
-// region Composables
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SessionFilterBar(
-    query: TextFieldValue,
-    onQueryChange: (TextFieldValue) -> Unit,
-    pdfFilter: PdfFilter,
-    onPdfFilterChange: (PdfFilter) -> Unit,
-    positionFilter: String,
-    onPositionFilterChange: (String) -> Unit,
-    positionOptions: List<String>
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(
-            value = query,
-            onValueChange = onQueryChange,
-            modifier = Modifier.fillMaxWidth(),
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-            label = { Text("Search by patient or ID") },
-            singleLine = true
-        )
-
-        SingleChoiceSegmentedButtonRow {
-            PdfFilter.entries.forEachIndexed { index, pf ->
-                SegmentedButton(
-                    selected = pf == pdfFilter,
-                    onClick = { onPdfFilterChange(pf) },
-                    shape = SegmentedButtonDefaults.itemShape(index, PdfFilter.entries.size),
-                    label = { Text(pf.label) }
+                )
+            } else {
+                CenterAlignedTopAppBar(
+                    title = { Text("Session History") },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { showBottomSheet = true }) {
+                            Icon(
+                                painterResource(R.drawable.filters),
+                                contentDescription = "Open filters"
+                            )
+                        }
+                        if (isFiltered) {
+                            TextButton(onClick = {
+                                query = TextFieldValue("")
+                                pdfFilter = PdfFilter.All
+                                positionFilter = "All"
+                                timeFilter = TimeFilter.All
+                                sortKey = SortKey.Date
+                                sortOrder = SortOrder.Desc
+                            }) { Text("Clear") }
+                        }
+                    }
                 )
             }
         }
-
-        ExposedDropdownMenuBox(
-            expanded = remember { mutableStateOf(false) }.value,
-            onExpandedChange = {}
-        ) {
-            var expanded by remember { mutableStateOf(false) }
-            OutlinedTextField(
-                value = positionFilter,
-                onValueChange = {},
-                readOnly = true,
-                label = { Text("Position") },
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                modifier = Modifier
-                    .menuAnchor()
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surface)
-            )
-            ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                positionOptions.forEach { opt ->
-                    DropdownMenuItem(
-                        text = { Text(opt) },
-                        onClick = {
-                            onPositionFilterChange(opt)
-                            expanded = false
-                        }
+    ) { pad ->
+        if (isLoading) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .padding(pad)
+            ) { CircularProgressIndicator(Modifier.align(Alignment.Center)) }
+        } else {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(pad)
+                    .padding(horizontal = 16.dp)
+            ) {
+                // Search
+                if (!selectionMode) {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                        label = { Text("Search by patient or ID") },
+                        singleLine = true
                     )
+                    Spacer(Modifier.height(16.dp))
+                }
+
+                if (filtered.isEmpty()) {
+                    EmptyState()
+                } else {
+                    val grouped = filtered
+                        .groupBy { parseToLocalDate(it.sessionStart) ?: LocalDate.MIN }
+                        .toSortedMap(compareByDescending { it })
+
+                    LazyColumn(
+                        contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        grouped.forEach { (day, list) ->
+                            stickyHeader {
+                                Text(
+                                    text = if (day == LocalDate.MIN) "Undated"
+                                    else day.format(DateTimeFormatter.ofPattern("EEE, dd MMM yyyy")),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 8.dp)
+                                )
+                            }
+                            items(list, key = { it.id }) { s ->
+                                val isSelectedItem = s.id in selectedIds
+                                SessionCard(
+                                    session = s,
+                                    selectionEnabled = selectionMode,
+                                    selected = isSelectedItem,
+                                    onToggleSelect = {
+                                        selectedIds =
+                                            if (isSelectedItem) selectedIds - s.id else selectedIds + s.id
+                                    },
+                                    onPlay = {
+                                        if (selectionMode) {
+                                            selectedIds =
+                                                if (isSelectedItem) selectedIds - s.id else selectedIds + s.id
+                                            return@SessionCard
+                                        }
+                                        val wav = File(s.wavPath)
+                                        if (!wav.exists()) return@SessionCard
+                                        val uri = FileProvider.getUriForFile(
+                                            ctx, "${ctx.packageName}.fileprovider", wav
+                                        )
+                                        ctx.startActivity(Intent(Intent.ACTION_VIEW).apply {
+                                            setDataAndType(uri, "audio/wav")
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        })
+                                    },
+                                    onGeneratePdf = {
+                                        if (selectionMode) return@SessionCard
+                                        scope.launch {
+                                            val pdf = generatePcgPdf(
+                                                context = ctx,
+                                                wavPath = s.wavPath,
+                                                meta = PcgReportMeta(
+                                                    patientName = s.patientName,
+                                                    patientId = s.patientId,
+                                                    sessionStart = s.sessionStart,
+                                                    deviceModel = s.deviceModel,
+                                                    notes = s.notes,
+                                                    age = s.age,
+                                                    sex = s.sex,
+                                                    height = s.height,
+                                                    weight = s.weight,
+                                                    bmi = s.bmi,
+                                                    posture = s.posture,
+                                                    position = s.position
+                                                )
+                                            )
+                                            SessionRepository.updatePdf(s.id, pdf.absolutePath)
+                                        }
+                                    },
+                                    onOpenPdf = {
+                                        if (selectionMode) {
+                                            selectedIds =
+                                                if (isSelectedItem) selectedIds - s.id else selectedIds + s.id
+                                            return@SessionCard
+                                        }
+                                        s.pdfPath?.let { path ->
+                                            val file = File(path)
+                                            if (file.exists()) {
+                                                val uri = FileProvider.getUriForFile(
+                                                    ctx, "${ctx.packageName}.fileprovider", file
+                                                )
+                                                ctx.startActivity(Intent(Intent.ACTION_VIEW).apply {
+                                                    setDataAndType(uri, "application/pdf")
+                                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                })
+                                            }
+                                        }
+                                    },
+                                    onSharePdf = {
+                                        if (selectionMode) {
+                                            selectedIds =
+                                                if (isSelectedItem) selectedIds - s.id else selectedIds + s.id
+                                            return@SessionCard
+                                        }
+                                        s.pdfPath?.let { path ->
+                                            val file = File(path)
+                                            if (file.exists()) {
+                                                val uri = FileProvider.getUriForFile(
+                                                    ctx, "${ctx.packageName}.fileprovider", file
+                                                )
+                                                ctx.startActivity(Intent(Intent.ACTION_SEND).apply {
+                                                    type = "application/pdf"
+                                                    putExtra(Intent.EXTRA_STREAM, uri)
+                                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                })
+                                            }
+                                        }
+                                    },
+                                    onDelete = {
+                                        if (selectionMode) {
+                                            selectedIds =
+                                                if (isSelectedItem) selectedIds - s.id else selectedIds + s.id
+                                        } else {
+                                            SessionRepository.delete(s)
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+
+    // --- Filters Bottom Sheet 2.1 (no duplicate position list) ---
+    if (showBottomSheet) {
+        // Drafts so user can cancel
+        var draftPdf by remember(pdfFilter) { mutableStateOf(pdfFilter) }
+        var draftPosition by remember(positionFilter) { mutableStateOf(positionFilter) }
+        var draftTime by remember(timeFilter) { mutableStateOf(timeFilter) }
+        var draftSortKey by remember(sortKey) { mutableStateOf(sortKey) }
+        var draftSortOrder by remember(sortOrder) { mutableStateOf(sortOrder) }
+        var positionSearch by remember { mutableStateOf(TextFieldValue("")) }
+
+        val allPositionsNoAll = remember(uniquePositions) { uniquePositions.filter { it != "All" } }
+        val filteredPositions = remember(allPositionsNoAll, positionSearch.text) {
+            val q = positionSearch.text.trim()
+            if (q.isBlank()) allPositionsNoAll
+            else allPositionsNoAll.filter { it.contains(q, ignoreCase = true) }
+        }
+
+        ModalBottomSheet(
+            onDismissRequest = { showBottomSheet = false },
+            sheetState = bottomSheetState
+        ) {
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+
+                // PDF
+                Text("PDF status", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+                SingleChoiceSegmentedButtonRow {
+                    PdfFilter.entries.forEachIndexed { index, opt ->
+                        SegmentedButton(
+                            selected = draftPdf == opt,
+                            onClick = { draftPdf = opt },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index,
+                                PdfFilter.entries.size
+                            ),
+                            label = { Text(opt.label) }
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(16.dp))
+
+                // Time
+                Text("Time range", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+                SingleChoiceSegmentedButtonRow {
+                    TimeFilter.entries.forEachIndexed { index, tf ->
+                        val lbl = when (tf) {
+                            TimeFilter.All -> "All"
+                            TimeFilter.Last7 -> "Last 7d"
+                            TimeFilter.Last30 -> "Last 30d"
+                        }
+                        SegmentedButton(
+                            selected = draftTime == tf,
+                            onClick = { draftTime = tf },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index,
+                                TimeFilter.entries.size
+                            ),
+                            label = { Text(lbl) }
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(16.dp))
+
+                // Position — single, searchable chips
+                Text("Position", style = MaterialTheme.typography.titleMedium)
+
+                Spacer(Modifier.height(10.dp))
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // "All" chip
+                    FilterChip(
+                        selected = draftPosition == "All",
+                        onClick = { draftPosition = "All" },
+                        label = { Text("All") },
+                        leadingIcon = if (draftPosition == "All") {
+                            { Icon(Icons.Filled.Check, contentDescription = null) }
+                        } else null
+                    )
+
+                    // Popular
+                    topPositions.forEach { pos ->
+                        FilterChip(
+                            selected = draftPosition == pos,
+                            onClick = { draftPosition = pos },
+                            label = { Text(pos) },
+                            leadingIcon = if (draftPosition == pos) {
+                                { Icon(Icons.Filled.Check, contentDescription = null) }
+                            } else null
+                        )
+                    }
+
+                    // Search results (excluding ones already shown in topPositions)
+                    filteredPositions
+                        .filterNot { it in topPositions }
+                        .forEach { pos ->
+                            FilterChip(
+                                selected = draftPosition == pos,
+                                onClick = { draftPosition = pos },
+                                label = { Text(pos) },
+                                leadingIcon = if (draftPosition == pos) {
+                                    { Icon(Icons.Filled.Check, contentDescription = null) }
+                                } else null
+                            )
+                        }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(16.dp))
+
+                // Sort
+                Text("Sort by", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+                SingleChoiceSegmentedButtonRow {
+                    SortKey.entries.forEachIndexed { index, key ->
+                        SegmentedButton(
+                            selected = draftSortKey == key,
+                            onClick = { draftSortKey = key },
+                            shape = SegmentedButtonDefaults.itemShape(index, SortKey.entries.size),
+                            label = { Text(key.label) }
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Order", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.width(12.dp))
+                    FilterChip(
+                        selected = draftSortOrder == SortOrder.Desc,
+                        onClick = { draftSortOrder = SortOrder.Desc },
+                        label = { Text("Desc") },
+                        leadingIcon = {
+                            Icon(
+                                painterResource(R.drawable.arrow_downward),
+                                contentDescription = null
+                            )
+                        }
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    FilterChip(
+                        selected = draftSortOrder == SortOrder.Asc,
+                        onClick = { draftSortOrder = SortOrder.Asc },
+                        label = { Text("Asc") },
+                        leadingIcon = {
+                            Icon(
+                                painterResource(R.drawable.arrow_upward),
+                                contentDescription = null
+                            )
+                        }
+                    )
+                }
+
+                // Sticky action bar
+                Spacer(Modifier.height(18.dp))
+                HorizontalDivider()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    TextButton(onClick = {
+                        draftPdf = PdfFilter.All
+                        draftPosition = "All"
+                        draftTime = TimeFilter.All
+                        draftSortKey = SortKey.Date
+                        draftSortOrder = SortOrder.Desc
+                        positionSearch = TextFieldValue("")
+                    }) { Text("RESET") }
+
+                    Button(onClick = {
+                        // Commit
+                        pdfFilter = draftPdf
+                        positionFilter = draftPosition
+                        timeFilter = draftTime
+                        sortKey = draftSortKey
+                        sortOrder = draftSortOrder
+                        showBottomSheet = false
+                    }) { Text("APPLY") }
+                }
+            }
+        }
+    }
+
+    // --- Bulk Delete Dialog ---
+    if (showBulkDeleteDialog) {
+        ElegantAlertDialog(
+            title = "Delete ${selectedIds.size} session(s)",
+            message = "Are you sure you want to delete the selected sessions? This action cannot be undone.",
+            onConfirm = {
+                deleteSelected()
+                showBulkDeleteDialog = false
+            },
+            onDismiss = { showBulkDeleteDialog = false },
+            confirmText = "Delete",
+            dismissText = "Cancel",
+            icon = Icons.Filled.Delete,
+            iconTint = MaterialTheme.colorScheme.error
+        )
+    }
 }
+
+// region card + helpers
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionCard(
     session: Session,
+    selectionEnabled: Boolean,
+    selected: Boolean,
+    onToggleSelect: () -> Unit,
     onPlay: () -> Unit,
     onGeneratePdf: () -> Unit,
     onOpenPdf: () -> Unit,
@@ -343,11 +644,15 @@ fun SessionCard(
     var showDeleteDialog by remember { mutableStateOf(false) }
 
     ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = { if (selectionEnabled) onToggleSelect() else onPlay() },
+                onLongClick = { onToggleSelect() }
+            ),
         shape = MaterialTheme.shapes.medium
     ) {
         Column(Modifier.padding(16.dp)) {
-            // Header
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -366,13 +671,24 @@ fun SessionCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Row {
-                    if (!session.pdfPath.isNullOrBlank()) {
-                        IconButton(onClick = onOpenPdf) {
-                            Icon(Icons.Default.PictureAsPdf, contentDescription = "Open PDF")
-                        }
-                        IconButton(onClick = onSharePdf) {
-                            Icon(Icons.Default.IosShare, contentDescription = "Share PDF")
+
+                if (selectionEnabled) {
+                    Checkbox(checked = selected, onCheckedChange = { onToggleSelect() })
+                } else {
+                    Row {
+                        if (!session.pdfPath.isNullOrBlank()) {
+                            IconButton(onClick = onOpenPdf) {
+                                Icon(
+                                    painterResource(R.drawable.picture_as_pdf),
+                                    contentDescription = "Open PDF"
+                                )
+                            }
+                            IconButton(onClick = onSharePdf) {
+                                Icon(
+                                    painterResource(R.drawable.share),
+                                    contentDescription = "Share PDF"
+                                )
+                            }
                         }
                     }
                 }
@@ -396,37 +712,39 @@ fun SessionCard(
 
             Spacer(Modifier.height(12.dp))
 
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedButton(onClick = onPlay) {
-                    Icon(Icons.Default.PlayArrow, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Play")
-                }
-
-                if (session.pdfPath.isNullOrBlank()) {
-                    Button(onClick = onGeneratePdf) {
-                        Icon(Icons.Default.Refresh, null)
+            if (!selectionEnabled) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(onClick = onPlay) {
+                        Icon(Icons.Filled.PlayArrow, null)
                         Spacer(Modifier.width(6.dp))
-                        Text("Generate PDF")
+                        Text("Play")
                     }
-                } else {
-                    Button(onClick = onOpenPdf) {
-                        Icon(Icons.Default.PictureAsPdf, null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Open PDF")
-                    }
-                }
 
-                IconButton(onClick = { showDeleteDialog = true }) {
-                    Icon(
-                        Icons.Default.Delete,
-                        contentDescription = "Delete",
-                        tint = MaterialTheme.colorScheme.error
-                    )
+                    if (session.pdfPath.isNullOrBlank()) {
+                        Button(onClick = onGeneratePdf) {
+                            Icon(Icons.Filled.Refresh, null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Generate PDF")
+                        }
+                    } else {
+                        Button(onClick = onGeneratePdf) {
+                            Icon(Icons.Filled.Refresh, null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Regenerate PDF")
+                        }
+                    }
+
+                    IconButton(onClick = { showDeleteDialog = true }) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = "Delete",
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
             }
         }
@@ -443,7 +761,7 @@ fun SessionCard(
             onDismiss = { showDeleteDialog = false },
             confirmText = "Delete",
             dismissText = "Cancel",
-            icon = Icons.Default.Delete,
+            icon = Icons.Filled.Delete,
             iconTint = MaterialTheme.colorScheme.error
         )
     }
@@ -458,7 +776,7 @@ private fun EmptyState() {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Icon(
-            imageVector = Icons.Default.Search,
+            imageVector = Icons.Filled.Search,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(64.dp)
@@ -473,28 +791,14 @@ private fun EmptyState() {
         )
     }
 }
-// endregion
 
-// region Helpers
+private fun parseToLocalDate(display: String): LocalDate? = runCatching {
+    val dt =
+        java.time.LocalDateTime.parse(display, DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm"))
+    dt.toLocalDate()
+}.getOrNull()
 
-private enum class PdfFilter(val label: String) {
-    All("All"), With("With PDF"), Without("No PDF")
+private fun isWithinDays(display: String, days: Int, today: LocalDate): Boolean {
+    val d = parseToLocalDate(display) ?: return false
+    return !d.isBefore(today.minusDays(days.toLong()))
 }
-
-private fun parseToLocalDate(display: String): LocalDate? {
-    return runCatching {
-        val dt = java.time.LocalDateTime.parse(
-            display,
-            DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm")
-        )
-        dt.toLocalDate()
-    }.getOrNull()
-}
-
-@Preview
-@Composable
-fun PreviewSessionList() {
-    val navController = rememberNavController()
-    SessionListScreen { navController.popBackStack() }
-}
-// endregion

@@ -13,13 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Notes
-import androidx.compose.material.icons.filled.Badge
-import androidx.compose.material.icons.filled.Cake
-import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.filled.Scale
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
@@ -46,9 +40,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import com.iamashad.musesample.R
 import com.iamashad.musesample.model.PcgReportMeta
 import com.iamashad.musesample.model.Session
 import java.time.LocalDateTime
@@ -65,9 +61,9 @@ fun MetadataScreen(
     val focus = LocalFocusManager.current
 
     // --- STATE ---
-    var patientName by remember { mutableStateOf(TextFieldValue("Jane Doe")) }
-    var patientId by remember { mutableStateOf(TextFieldValue("P-123456")) }
-    var device by remember { mutableStateOf(TextFieldValue("TAAL Stethoscope")) }
+    var patientName by remember { mutableStateOf(TextFieldValue("")) }
+    var patientId by remember { mutableStateOf(TextFieldValue("P-")) }
+    var device by remember { mutableStateOf(TextFieldValue("TAAL")) }
     var notes by remember { mutableStateOf(TextFieldValue("")) }
     var age by remember { mutableStateOf(TextFieldValue("37")) }
     var s3x by remember { mutableStateOf(PatientS3x.Male) }
@@ -147,7 +143,10 @@ fun MetadataScreen(
                 },
                 content = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(imageVector = Icons.Filled.Save, contentDescription = "Save")
+                        Icon(
+                            painter = painterResource(R.drawable.save),
+                            contentDescription = "Save"
+                        )
                         Spacer(Modifier.width(12.dp))
                         Text(text = "Save Session")
                     }
@@ -186,7 +185,12 @@ fun MetadataScreen(
                         value = patientId,
                         onValueChange = { patientId = it },
                         label = { Text("Patient ID*") },
-                        leadingIcon = { Icon(Icons.Filled.Badge, null) },
+                        leadingIcon = {
+                            Icon(
+                                painter = painterResource(R.drawable.id),
+                                contentDescription = "Patient ID"
+                            )
+                        },
                         isError = !idOk,
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
@@ -197,7 +201,12 @@ fun MetadataScreen(
                             onChange = { age = it },
                             label = "Age*",
                             isError = !ageOk,
-                            leadingIcon = { Icon(Icons.Filled.Cake, null) },
+                            leadingIcon = {
+                                Icon(
+                                    painter = painterResource(R.drawable.age),
+                                    contentDescription = "Age"
+                                )
+                            },
                             modifier = Modifier.weight(1f)
                         )
                         LabeledDropdown(
@@ -245,7 +254,12 @@ fun MetadataScreen(
                         onValueChange = {},
                         readOnly = true,
                         label = { Text("BMI (auto-calculated)") },
-                        leadingIcon = { Icon(Icons.Filled.Scale, null) },
+                        leadingIcon = {
+                            Icon(
+                                painter = painterResource(R.drawable.scale),
+                                contentDescription = "Scale"
+                            )
+                        },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -256,7 +270,12 @@ fun MetadataScreen(
                         value = device,
                         onValueChange = { device = it },
                         label = { Text("Device") },
-                        leadingIcon = { Icon(Icons.Filled.MonitorHeart, null) },
+                        leadingIcon = {
+                            Icon(
+                                painter = painterResource(R.drawable.monitor_heart),
+                                contentDescription = "Monitor Heart"
+                            )
+                        },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -277,7 +296,12 @@ fun MetadataScreen(
                         onValueChange = { notes = it },
                         label = { Text("Clinician Notes") },
                         placeholder = { Text("Optional observations...") },
-                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.Notes, null) },
+                        leadingIcon = {
+                            Icon(
+                                painter = painterResource(R.drawable.notes),
+                                contentDescription = "Notes"
+                            )
+                        },
                         minLines = 3,
                         maxLines = 6,
                         modifier = Modifier.fillMaxWidth()

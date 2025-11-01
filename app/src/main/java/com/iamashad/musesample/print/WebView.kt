@@ -1,13 +1,10 @@
 @file:Suppress("unused")
+
 package android.print
 
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
-import android.print.PrintAttributes
-import android.print.PrintDocumentAdapter
-import android.print.PageRange
-import android.print.PrintDocumentInfo
 import android.webkit.WebView
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
@@ -17,6 +14,7 @@ import kotlin.coroutines.resumeWithException
  * Writes a WebView's content to the given ParcelFileDescriptor as PDF.
  * Must live in package android.print so the nested callback constructors are accessible.
  */
+
 suspend fun writeWebViewToPdf(
     webView: WebView,
     outputPfd: ParcelFileDescriptor,
@@ -33,12 +31,23 @@ suspend fun writeWebViewToPdf(
         override fun onLayoutFinished(info: PrintDocumentInfo?, changed: Boolean) {
             val writeCallback = object : PrintDocumentAdapter.WriteResultCallback() {
                 override fun onWriteFinished(pageRanges: Array<out PageRange>?) {
-                    try { outputPfd.close() } catch (_: Throwable) {}
+                    try {
+                        outputPfd.close()
+                    } catch (_: Throwable) {
+                    }
                     cont.resume(Unit)
                 }
+
                 override fun onWriteFailed(error: CharSequence?) {
-                    try { outputPfd.close() } catch (_: Throwable) {}
-                    cont.resumeWithException(IllegalStateException(error?.toString() ?: "Write failed"))
+                    try {
+                        outputPfd.close()
+                    } catch (_: Throwable) {
+                    }
+                    cont.resumeWithException(
+                        IllegalStateException(
+                            error?.toString() ?: "Write failed"
+                        )
+                    )
                 }
             }
 

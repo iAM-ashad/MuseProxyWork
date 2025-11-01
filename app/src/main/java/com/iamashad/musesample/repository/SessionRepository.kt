@@ -1,6 +1,9 @@
 package com.iamashad.musesample.repository
 
 import android.content.Context
+import android.util.Log
+import androidx.core.net.toUri
+import com.iamashad.musesample.TAG_MUSE_DB
 import com.iamashad.musesample.db.DbProvider
 import com.iamashad.musesample.db.entities.SessionEntity
 import com.iamashad.musesample.model.Session
@@ -17,6 +20,7 @@ import java.time.format.DateTimeFormatter
  * Encrypted Room-backed repository.
  * API kept compatible with previous in-memory version: add, updatePdf, delete, sessions Flow.
  */
+
 object SessionRepository {
     private lateinit var appContext: Context
     private val io = CoroutineScope(Dispatchers.IO)
@@ -25,7 +29,6 @@ object SessionRepository {
         appContext = context.applicationContext
     }
 
-    // Expose as Flow so existing collectAsState still works
     val sessions: Flow<List<Session>> by lazy {
         DbProvider.get(appContext).sessionDao().observeAll().map { rows ->
             rows.map { it.toDomain() }
@@ -35,26 +38,50 @@ object SessionRepository {
     /** Add / upsert a session (keeps your existing call site). */
     fun add(s: Session) {
         io.launch {
-            DbProvider.get(appContext).sessionDao().upsert(s.toEntity())
+            try {
+                DbProvider.get(appContext).sessionDao().upsert(s.toEntity())
+                Log.i(TAG_MUSE_DB, "session_upsert_ok | SID=${s.id}")
+            } catch (t: Throwable) {
+                Log.e(
+                    TAG_MUSE_DB,
+                    "session_upsert_fail | SID=${s.id} | REASON=${t.javaClass.simpleName}: ${t.message}"
+                )
+            }
         }
     }
 
-    /** Update only the PDF path (keeps your existing call site). */
     fun updatePdf(id: Long, pdfPath: String) {
         io.launch {
-            DbProvider.get(appContext).sessionDao().updatePdfPath(id, pdfPath)
+            try {
+                DbProvider.get(appContext).sessionDao().updatePdfPath(id, pdfPath)
+                val scheme = runCatching {
+                    pdfPath.toUri().scheme ?: "file"
+                }.getOrDefault("file")
+                Log.i(TAG_MUSE_DB, "session_pdf_update_ok | SID=$id | SCHEME=$scheme")
+            } catch (t: Throwable) {
+                Log.e(
+                    TAG_MUSE_DB,
+                    "session_pdf_update_fail | SID=$id | REASON=${t.javaClass.simpleName}: ${t.message}"
+                )
+            }
         }
     }
 
-    /** Delete a session (keeps your existing call site). */
     fun delete(s: Session) {
         io.launch {
-            DbProvider.get(appContext).sessionDao().delete(s.toEntity())
+            try {
+                DbProvider.get(appContext).sessionDao().delete(s.toEntity())
+                Log.i(TAG_MUSE_DB, "session_delete_ok | SID=${s.id}")
+            } catch (t: Throwable) {
+                Log.e(
+                    TAG_MUSE_DB,
+                    "session_delete_fail | SID=${s.id} | REASON=${t.javaClass.simpleName}: ${t.message}"
+                )
+            }
         }
     }
-}
 
-// ---------- Mappers ----------
+}
 
 private fun Session.toEntity(): SessionEntity {
     val epoch = try {

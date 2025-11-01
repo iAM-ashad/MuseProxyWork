@@ -2,7 +2,6 @@ package com.iamashad.musesample
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.os.Build
 import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.util.Base64
@@ -10,7 +9,6 @@ import android.util.Log
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
-import androidx.annotation.RequiresApi
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
 import com.iamashad.musesample.audio.bandpassFilter
@@ -29,92 +27,6 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-
-/*
-fun buildPcgWaveformBitmap(
-    context: Context,
-    normalized: List<Float>,
-    secondsTotal: Float, // THIS VALUE IS KEY
-    widthPx: Int = 1800,
-    heightPx: Int = 700
-): Bitmap {
-    Log.d(
-        "PCG_DEBUG",
-        "buildPcgWaveformBitmap: secondsTotal=$secondsTotal, normalized.size=${normalized.size}"
-    )
-
-    val chart = LineChart(context).apply {
-        layoutParams = android.view.ViewGroup.LayoutParams(widthPx, heightPx)
-        setBackgroundColor(Color.WHITE)
-        description = Description().apply { text = "" }
-        legend.isEnabled = false
-        setTouchEnabled(false)
-        setPinchZoom(false)
-        axisRight.isEnabled = false
-
-        // X axis (time)
-        xAxis.apply {
-            position = XAxis.XAxisPosition.BOTTOM
-            setDrawGridLines(true)
-            gridColor = Color.LTGRAY
-            textColor = Color.DKGRAY
-            textSize = 10f
-        }
-
-        // Y axis (amplitude)
-        axisLeft.apply {
-            setDrawGridLines(true)
-            gridColor = Color.LTGRAY
-            textColor = Color.DKGRAY
-            textSize = 10f
-            axisMinimum = -1100f
-            axisMaximum = 1100f
-        }
-    }
-
-    val numPoints = normalized.size
-    val numTimeSteps = (numPoints / 2).coerceAtLeast(1) // Ensure at least 1 for division
-    Log.d(
-        "PCG_DEBUG",
-        "buildPcgWaveformBitmap: numPoints=${numPoints}, numTimeSteps=${numTimeSteps}"
-    )
-
-    val entries = normalized.mapIndexed { i, y ->
-        val segmentIndex = i / 2
-        val x = segmentIndex * (secondsTotal / numTimeSteps.toFloat()) // Calculate x
-
-        // Log a few sample entries to see their x and y values
-        if (i < 10 || i > numPoints - 10) { // Log first few and last few
-            Log.d("PCG_DEBUG_ENTRIES", "Entry $i: x=$x, y=$y")
-        }
-        Entry(x, y)
-    }
-    val dataSet = LineDataSet(entries, "PCG").apply {
-        setDrawCircles(false)
-        setDrawValues(false)
-        lineWidth = 1.3f
-        color = Color.BLACK
-        mode = LineDataSet.Mode.CUBIC_BEZIER
-    }
-
-    // ... (rest of the chart setup) ...
-    chart.data = LineData(dataSet)
-    chart.xAxis.axisMinimum = 0f
-    chart.xAxis.axisMaximum = maxOf(secondsTotal, 1f) // This should reflect the true duration
-    Log.d("PCG_DEBUG", "Chart X-axis max: ${chart.xAxis.axisMaximum}")
-
-    // ... (Layout and draw) ...
-    val wSpec = View.MeasureSpec.makeMeasureSpec(widthPx, View.MeasureSpec.EXACTLY)
-    val hSpec = View.MeasureSpec.makeMeasureSpec(heightPx, View.MeasureSpec.EXACTLY)
-    chart.measure(wSpec, hSpec)
-    chart.layout(0, 0, widthPx, heightPx)
-
-    val bmp = createBitmap(widthPx, heightPx)
-    val canvas = Canvas(bmp)
-    chart.draw(canvas)
-    return bmp
-}
-*/
 
 // ───────────────────────────────
 // Bitmap → Base64 PNG
@@ -348,15 +260,14 @@ suspend fun generatePcgPdf(
         "PCG_DEBUG",
         "Downsample done in ${t4 - t3} ms. Normalized size: ${normalized.size} points."
     )
-    // Expect normalized.size to be close to targetDownsampledPoints (e.g., 3200)
 
     val bmp = buildStackedPcgBitmap(
         context = context,
         normalized = normalized,
         secondsTotal = totalDuration,
-        segmentSec = 7.5f,
-        widthPx = 2600,
-        heightPx = 1400,
+        segmentSec = 5f,
+        widthPx = 2400,
+        heightPx = 1200,
         rowSpacingPx = 40
     )
 
@@ -379,5 +290,3 @@ suspend fun generatePcgPdf(
 
     return pdf
 }
-
-

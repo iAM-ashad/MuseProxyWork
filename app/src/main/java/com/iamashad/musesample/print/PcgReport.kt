@@ -101,5 +101,3 @@ fun buildStackedPcgBitmap(
 
     return bmp
 }
-
-
