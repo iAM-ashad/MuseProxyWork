@@ -13,6 +13,22 @@ import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 
+/**
+ * Render a stacked phonocardiogram (PCG) bitmap suitable for print/PDF.
+ *
+ * Input contract:
+ * - [normalized] contains samples scaled to about ±1000 (see downsampleWaveform()).
+ * - We assume samples are uniformly spaced over [secondsTotal].
+ *
+ * Layout:
+ * - The waveform is split into fixed-duration bands (rows) of [segmentSec] seconds.
+ * - Each row has top/bottom borders and a dashed zero line.
+ * - The trace starts at the left edge and fills the row width (no side gutters).
+ *
+ * Sizing:
+ * - The function is deterministic given the inputs, so PDF layout is predictable.
+ * - Vertical scale maps ±1000 to ~80% of available row height (headroom for spikes).
+ */
 fun buildStackedPcgBitmap(
     context: Context,
     normalized: List<Float>,
@@ -26,19 +42,19 @@ fun buildStackedPcgBitmap(
 
     val rows = max(1, ceil(secondsTotal / segmentSec).toInt())
 
-    // Symmetric paddings; no inner gutter so the trace can touch edges
+    // Outer padding only (no inner side paddings so the trace uses full width).
     val topPadding = 40
     val bottomPadding = 64
 
     val availableH = heightPx - topPadding - bottomPadding - (rows - 1) * rowSpacingPx
     val rowH = max(160, availableH / rows)
 
-    // Treat `normalized` as uniformly sampled over [0, secondsTotal]
+    // Sample-to-time mapping (uniform sampling across the full duration).
     val samplesPerSec = (normalized.size / secondsTotal).coerceAtLeast(1f)
 
-    // Paints
+    // Styles
     val topBottomPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = "#B0C4DE".toColorInt() // same vibe as the wave card
+        color = "#B0C4DE".toColorInt()
         strokeWidth = 2f
         style = Paint.Style.STROKE
     }
@@ -53,6 +69,7 @@ fun buildStackedPcgBitmap(
         style = Paint.Style.STROKE
     }
 
+    // Maps ±1000 → row band with ~20% vertical margin.
     fun mapY(v: Float, rowTop: Int, rowBottom: Int): Float {
         val mid = (rowTop + rowBottom) / 2f
         val half = (rowBottom - rowTop) * 0.40f
@@ -67,15 +84,15 @@ fun buildStackedPcgBitmap(
         val rowTop = (topPadding + r * (rowH + rowSpacingPx)).toFloat()
         val rowBottom = rowTop + rowH
 
-        // === Only TOP & BOTTOM borders ===
+        // Row borders
         canvas.drawLine(0f, rowTop, widthPx.toFloat(), rowTop, topBottomPaint)
         canvas.drawLine(0f, rowBottom, widthPx.toFloat(), rowBottom, topBottomPaint)
 
-        // Zero (baseline) dashed line
+        // Baseline (0)
         val zY = mapY(0f, rowTop.toInt(), rowBottom.toInt())
         canvas.drawLine(0f, zY, widthPx.toFloat(), zY, zeroPaint)
 
-        // Segment bounds (seconds)
+        // Segment bounds in seconds → sample indices
         val segStartSec = r * segmentSec
         val segEndSec = min((r + 1) * segmentSec, secondsTotal)
 
@@ -83,7 +100,7 @@ fun buildStackedPcgBitmap(
         val sEnd = min(normalized.size, ceil(segEndSec * samplesPerSec).toInt())
         if (sEnd <= sStart + 1) continue
 
-        // Trace from EXACTLY left edge (x0) to right edge (x1)
+        // Draw continuous path across the row
         val x0 = 0f
         val x1 = widthPx.toFloat()
         val count = (sEnd - sStart).coerceAtLeast(2)

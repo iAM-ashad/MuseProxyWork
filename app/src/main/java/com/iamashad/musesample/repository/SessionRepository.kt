@@ -17,25 +17,42 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /**
- * Encrypted Room-backed repository.
- * API kept compatible with previous in-memory version: add, updatePdf, delete, sessions Flow.
+ * Process-wide repository for persisted PCG sessions.
+ *
+ * Responsibilities:
+ * - Provide a Flow of domain [Session] objects for the UI.
+ * - Write-through helpers to insert/update/delete sessions.
+ * - Hide Room/SQLCipher details behind a simple API.
+ *
+ * Lifecycle:
+ * - Call [init] once from [android.app.Application] (see `MuseSampleApp.kt`).
+ * - All DB work is performed on Dispatchers.IO via a private scope.
  */
-
 object SessionRepository {
+
     private lateinit var appContext: Context
     private val io = CoroutineScope(Dispatchers.IO)
 
+    /** Initialize with the application context to avoid leaking activities. */
     fun init(context: Context) {
         appContext = context.applicationContext
     }
 
+    /**
+     * Live list of sessions, newest-first, mapped from Room entities to domain models.
+     * Collected by the Session History screen.
+     */
     val sessions: Flow<List<Session>> by lazy {
         DbProvider.get(appContext).sessionDao().observeAll().map { rows ->
             rows.map { it.toDomain() }
         }
     }
 
-    /** Add / upsert a session (keeps your existing call site). */
+    /**
+     * Insert or replace a session row.
+     *
+     * Use when saving from the Metadata screen after a recording completes.
+     */
     fun add(s: Session) {
         io.launch {
             try {
@@ -50,13 +67,17 @@ object SessionRepository {
         }
     }
 
+    /**
+     * Attach or update the generated PDF path for a session.
+     *
+     * @param id The session primary key.
+     * @param pdfPath Absolute path to the generated report (or null to clear).
+     */
     fun updatePdf(id: Long, pdfPath: String) {
         io.launch {
             try {
                 DbProvider.get(appContext).sessionDao().updatePdfPath(id, pdfPath)
-                val scheme = runCatching {
-                    pdfPath.toUri().scheme ?: "file"
-                }.getOrDefault("file")
+                val scheme = runCatching { pdfPath.toUri().scheme ?: "file" }.getOrDefault("file")
                 Log.i(TAG_MUSE_DB, "session_pdf_update_ok | SID=$id | SCHEME=$scheme")
             } catch (t: Throwable) {
                 Log.e(
@@ -67,6 +88,9 @@ object SessionRepository {
         }
     }
 
+    /**
+     * Delete a session row (used by the session card and bulk delete).
+     */
     fun delete(s: Session) {
         io.launch {
             try {
@@ -80,9 +104,16 @@ object SessionRepository {
             }
         }
     }
-
 }
 
+/* ------------------------------ Mappers ------------------------------ */
+
+/**
+ * Map a domain model to a Room entity.
+ *
+ * - Parses [Session.sessionStart] (e.g., "01 Nov 2025, 10:42") to epoch millis
+ *   for stable sorting in SQL. Falls back to current time if parsing fails.
+ */
 private fun Session.toEntity(): SessionEntity {
     val epoch = try {
         val fmt = DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm")
@@ -105,13 +136,14 @@ private fun Session.toEntity(): SessionEntity {
         position = position,
         wavPath = wavPath,
         pdfPath = pdfPath,
-        sex = sex,          // store plain string; UI renders as “S.E.X.: …”
+        sex = sex,
         height = height,
         weight = weight,
         bmi = bmi
     )
 }
 
+/** Map a Room entity back to the UI-facing domain model. */
 private fun SessionEntity.toDomain(): Session = Session(
     id = id,
     patientName = patientName,

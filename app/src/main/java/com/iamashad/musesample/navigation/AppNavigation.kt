@@ -19,6 +19,18 @@ import com.iamashad.musesample.screens.record.RecordingScreen
 import com.iamashad.musesample.screens.record.RecordingViewModel
 import com.iamashad.musesample.screens.session.SessionListScreen
 
+/**
+ * App-level navigation graph with lightweight cross-fade transitions.
+ *
+ * Destinations:
+ *  - HOME → device connection + entry point.
+ *  - RECORD → live capture UI.
+ *  - META → form to save session metadata (accepts optional wav path).
+ *  - SESSIONS → session history list.
+ *
+ * ViewModels are owned by the caller (activity) and passed down so screens
+ * can share state across destinations (e.g., Recording → Metadata).
+ */
 @Composable
 fun AppNavigation(
     homeViewModel: HomeViewModel,
@@ -27,6 +39,7 @@ fun AppNavigation(
 ) {
     val nav: NavHostController = rememberNavController()
 
+    // enter exit fade animations
     val enter = fadeIn(animationSpec = tween(durationMillis = 220, delayMillis = 90))
     val exit = fadeOut(animationSpec = tween(durationMillis = 90))
 
@@ -41,10 +54,12 @@ fun AppNavigation(
         composable(Routes.HOME) {
             HomeScreen(nav, homeViewModel)
         }
+
         composable(Routes.RECORD) {
             RecordingScreen(
                 vm = recordingViewModel,
                 onStopAndSave = { wav ->
+                    // Accept path from VM if callback path is null.
                     val safe = wav ?: recordingViewModel.lastWavPath()
                     if (!safe.isNullOrEmpty()) {
                         val encoded = Uri.encode(safe)
@@ -54,6 +69,8 @@ fun AppNavigation(
                 onCancel = { nav.popBackStack() }
             )
         }
+
+        // Metadata route accepts a nullable WAV path.
         composable(
             route = "${Routes.META}?wav={wav}",
             arguments = listOf(
@@ -71,6 +88,7 @@ fun AppNavigation(
                 vm = metadataViewModel
             )
         }
+
         composable(Routes.SESSIONS) {
             SessionListScreen(onBack = { nav.popBackStack() })
         }

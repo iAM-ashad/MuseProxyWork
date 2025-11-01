@@ -11,7 +11,6 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.iamashad.musesample.screens.home.ConnectivityStatus
 import com.iamashad.musesample.wrapper.UsbHelper
 import com.iamashad.musesample.wrapper.ConnectionState
 import com.iamashad.musesample.wrapper.TaalSdkHolder
@@ -20,10 +19,11 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 
+/** Device categories shown in the picker. */
 enum class DeviceKind { STETHOSCOPE, ECG }
 
+/** Simple UI model for a USB device row in the sheet. */
 data class UiDevice(
     val id: String,
     val name: String,
@@ -32,12 +32,22 @@ data class UiDevice(
     val usbDevice: UsbDevice? = null
 )
 
+/**
+ * ViewModel powering the Home screen device UX.
+ *
+ * Responsibilities:
+ * - Reflect wrapper connection as a UI-friendly [ConnectivityStatus].
+ * - Discover USB devices and present them in the picker.
+ * - Orchestrate the "connect with permission" flow.
+ *
+ * - We DO NOT auto-start the monitor in init. The user explicitly connects.
+ */
 class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val app = application
     private val wrapper = TaalSdkHolder.get(app)
 
-    /** Banner state reflects ONLY the TAAL monitor; starts as Disconnected until user taps Connect. */
+    /** Banner state; Connected shows a friendly name rather than raw VID/PID. */
     val connectivityStatus = wrapper.connection
         .map { st ->
             when (st) {
@@ -47,13 +57,13 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, ConnectivityStatus.Disconnected)
 
-    /** List shown in the device picker. */
+    /** List rendered in the device picker. */
     val devices = MutableStateFlow<List<UiDevice>>(emptyList())
 
-    /** Are we currently running TAAL monitor (we control when it starts/stops)? */
+    /** We start/stop the monitor explicitly, not in init. */
     private var monitorStarted = false
 
-    /** Presence receiver: updates picker on USB attach/detach & permission result. */
+    /** Keep the picker up to date with USB attach/detach and permission changes. */
     private val usbPresenceReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -65,8 +75,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
-        // IMPORTANT: do NOT start TAAL monitor here (prevents auto-connect).
-        // We only register a presence receiver to keep the picker fresh.
+        // Register presence receiver only; do not start monitoring here.
         val filter = IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
@@ -76,18 +85,13 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             app.registerReceiver(usbPresenceReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             @Suppress("DEPRECATION")
-            ContextCompat.registerReceiver(
-                app,
-                usbPresenceReceiver,
-                filter,
-                ContextCompat.RECEIVER_NOT_EXPORTED
-            )
+            ContextCompat.registerReceiver(app, usbPresenceReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         }
 
         refreshDevices()
     }
 
-    /** Builds the picker list from current USB devices. */
+    /** Build the picker list from current attached USB devices. */
     fun refreshDevices() {
         val mgr = app.getSystemService(Context.USB_SERVICE) as UsbManager
         val list = mgr.deviceList.values.toList()
@@ -113,10 +117,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * User presses "Connect" in the dialog:
-     * 1) Request USB permission for the selected device.
-     * 2) Start TAAL monitor (only now!), which lets the SDK emit Connected/Disconnected.
-     * 3) If permission denied, keep monitor stopped.
+     * User chooses a device:
+     * 1) Request OS-level USB permission for that device.
+     * 2) Start (or restart) the TAAL monitor if permission granted.
+     * 3) Force a connection poll so the Start Session button enables quickly.
      */
     fun connectTo(device: UiDevice) {
         viewModelScope.launch {
@@ -129,7 +133,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
-            // Start monitoring only after explicit Connect
             if (!monitorStarted) {
                 wrapper.startDeviceMonitor()
                 monitorStarted = true
@@ -138,21 +141,12 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 wrapper.startDeviceMonitor()
             }
 
-            // 🔁 Force an immediate state snapshot so Start Session can enable right away
             wrapper.pollConnectionNow()
-
-            // (optional) tiny delay + second poll if you want to be extra safe
-            // delay(150); wrapper.pollConnectionNow()
-
             refreshDevices()
         }
     }
 
-
-    /**
-     * Optional call if you add a "Disconnect" button in UI.
-     * This guarantees no further auto flips while the monitor is off.
-     */
+    /** Optional: manual disconnect from UI. */
     fun disconnect() {
         if (monitorStarted) {
             wrapper.stopDeviceMonitor()
@@ -163,8 +157,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         runCatching { app.unregisterReceiver(usbPresenceReceiver) }
-        // Do not leave monitor running if user navigates away from Home completely:
-        // (comment this out if you want it to persist)
+        // Do not leave the monitor running if the VM is cleared.
         if (monitorStarted) {
             wrapper.stopDeviceMonitor()
             monitorStarted = false

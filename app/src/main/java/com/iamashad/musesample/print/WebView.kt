@@ -11,10 +11,19 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * Writes a WebView's content to the given ParcelFileDescriptor as PDF.
- * Must live in package android.print so the nested callback constructors are accessible.
+ * Print a WebView’s current content into a PDF file descriptor.
+ *
+ * Why this package name?
+ * - Placing this file in `package android.print` allows access to nested framework
+ *   callback classes' constructors (needed by the print pipeline).
+ *
+ * Usage:
+ *   val pfd = ParcelFileDescriptor.open(outFile, MODE_CREATE or MODE_TRUNCATE or MODE_READ_WRITE)
+ *   writeWebViewToPdf(webView, pfd)
+ *
+ * Threading:
+ * - Must be called on the main thread (WebView/printing are UI-bound).
  */
-
 suspend fun writeWebViewToPdf(
     webView: WebView,
     outputPfd: ParcelFileDescriptor,
@@ -31,23 +40,13 @@ suspend fun writeWebViewToPdf(
         override fun onLayoutFinished(info: PrintDocumentInfo?, changed: Boolean) {
             val writeCallback = object : PrintDocumentAdapter.WriteResultCallback() {
                 override fun onWriteFinished(pageRanges: Array<out PageRange>?) {
-                    try {
-                        outputPfd.close()
-                    } catch (_: Throwable) {
-                    }
+                    try { outputPfd.close() } catch (_: Throwable) { }
                     cont.resume(Unit)
                 }
 
                 override fun onWriteFailed(error: CharSequence?) {
-                    try {
-                        outputPfd.close()
-                    } catch (_: Throwable) {
-                    }
-                    cont.resumeWithException(
-                        IllegalStateException(
-                            error?.toString() ?: "Write failed"
-                        )
-                    )
+                    try { outputPfd.close() } catch (_: Throwable) { }
+                    cont.resumeWithException(IllegalStateException(error?.toString() ?: "Write failed"))
                 }
             }
 

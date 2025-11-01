@@ -1,16 +1,7 @@
-package com.iamashad.musesample.widgets.dialogs
+package com.iamashad.musesample.widgets
 
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -36,6 +27,22 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 
+/**
+ * Reusable, opinionated confirmation dialog with:
+ * - Optional header image (wide banner).
+ * - Prominent icon (defaults to a check mark).
+ * - Title, message, and configurable primary/secondary actions.
+ *
+ * When to use:
+ * - Destructive actions (delete, reset).
+ * - Sharing/export confirmation.
+ * - Any action that needs a little ceremony and clear choices.
+ *
+ * Styling notes:
+ * - Uses a rounded container with tonal elevation and theme-aware colors.
+ * - Primary action uses a FilledTonalButton; secondary is a TextButton (right-aligned).
+ * - Buttons are UPPERCASE for emphasis/affordance.
+ */
 @Composable
 fun ElegantAlertDialog(
     title: String,
@@ -64,9 +71,8 @@ fun ElegantAlertDialog(
                 .wrapContentHeight()
                 .padding(24.dp)
         ) {
-            Column(
-                modifier = Modifier.padding(24.dp)
-            ) {
+            Column(modifier = Modifier.padding(24.dp)) {
+                // Optional banner image (e.g., illustration or photo).
                 if (image != null) {
                     Image(
                         painter = image,
@@ -80,6 +86,7 @@ fun ElegantAlertDialog(
                     Spacer(Modifier.height(16.dp))
                 }
 
+                // Leading icon to reinforce intent (success/warning/error).
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
@@ -91,6 +98,7 @@ fun ElegantAlertDialog(
 
                 Spacer(Modifier.height(16.dp))
 
+                // Title
                 Text(
                     text = title,
                     style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
@@ -99,6 +107,7 @@ fun ElegantAlertDialog(
 
                 Spacer(Modifier.height(8.dp))
 
+                // Body message (centered, subdued color)
                 Text(
                     text = message,
                     style = MaterialTheme.typography.bodyMedium,
@@ -109,6 +118,7 @@ fun ElegantAlertDialog(
 
                 Spacer(Modifier.height(24.dp))
 
+                // Actions: secondary (dismiss) then primary (confirm), right-aligned.
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End

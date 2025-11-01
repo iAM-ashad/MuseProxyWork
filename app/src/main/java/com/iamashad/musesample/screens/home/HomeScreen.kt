@@ -42,11 +42,13 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
@@ -86,10 +88,21 @@ import com.airbnb.lottie.compose.LottieAnimation
 import com.airbnb.lottie.compose.LottieCompositionSpec
 import com.airbnb.lottie.compose.LottieConstants
 import com.airbnb.lottie.compose.rememberLottieComposition
-import com.iamashad.musesample.screens.home.ConnectivityStatus
 import com.iamashad.musesample.R
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+/**
+ * Home screen:
+ * - Shows connection status and allows connecting to a TAAL device.
+ * - Entry points to "Start Session" and "Session History".
+ * - Device picker is a bottom sheet with pull-to-refresh and grouping.
+ *
+ * Interaction flow:
+ * 1) Tap the status indicator → opens device picker.
+ * 2) Choose a device → show a permission explainer → request USB permission.
+ * 3) ViewModel starts the monitor; banner updates live via a Flow.
+ */
 
 @Composable
 fun HomeScreen(
@@ -104,11 +117,11 @@ fun HomeScreen(
     var showPicker by remember { mutableStateOf(false) }
     var isRefreshing by remember { mutableStateOf(false) }
 
-    // NEW: pending device for pre-permission explainer
+    // Pre-permission explainer and pending device
     var pendingDevice by remember { mutableStateOf<UiDevice?>(null) }
     var showUsbExplainer by remember { mutableStateOf(false) }
 
-    // NEW: disconnect confirmation
+    // Disconnect confirmation
     var showDisconnectConfirm by remember { mutableStateOf(false) }
 
     Column(
@@ -119,7 +132,7 @@ fun HomeScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        // Header
+        // Logo
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -133,7 +146,7 @@ fun HomeScreen(
             )
         }
 
-        // Connection Status Card
+        // Status card (tap to connect/disconnect)
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -158,7 +171,6 @@ fun HomeScreen(
                             }
 
                             is ConnectivityStatus.Connected -> {
-                                // NEW: tap again to disconnect
                                 showDisconnectConfirm = true
                             }
 
@@ -168,9 +180,7 @@ fun HomeScreen(
                 )
 
                 Spacer(Modifier.height(16.dp))
-
                 ConnectionStateCard(connectionState)
-
                 Spacer(Modifier.height(12.dp))
 
                 Text(
@@ -190,12 +200,11 @@ fun HomeScreen(
             }
         }
 
-        // Start Session
+        // Primary actions
         StartSessionButton(
             isEnabled = connectionState is ConnectivityStatus.Connected
         ) { navController.navigate("record") }
 
-        // Sessions
         FilledTonalButton(
             onClick = { navController.navigate("sessions") },
             modifier = Modifier
@@ -223,7 +232,7 @@ fun HomeScreen(
         )
     }
 
-    // Device picker
+    // Device picker sheet
     if (showPicker) {
         DevicePickerSheet(
             devices = devices,
@@ -234,7 +243,6 @@ fun HomeScreen(
             },
             onDismiss = { showPicker = false },
             onConnect = { device ->
-                // NEW: show explainer first, then call viewModel.connectTo()
                 pendingDevice = device
                 showPicker = false
                 showUsbExplainer = true
@@ -242,13 +250,12 @@ fun HomeScreen(
         )
     }
 
-    // NEW: USB permission explainer (pre-permission UX)
+    // USB permission explainer sheet
     if (showUsbExplainer && pendingDevice != null) {
         UsbPermissionSheet(
             device = pendingDevice!!,
             onDismiss = { showUsbExplainer = false; pendingDevice = null },
             onContinue = {
-                // Trigger the original flow (requests system permission if needed)
                 viewModel.connectTo(pendingDevice!!)
                 showUsbExplainer = false
                 pendingDevice = null
@@ -256,7 +263,7 @@ fun HomeScreen(
         )
     }
 
-    // NEW: Disconnect confirmation
+    // Disconnect dialog
     if (showDisconnectConfirm) {
         DisconnectConfirmDialog(
             onDismiss = { showDisconnectConfirm = false },
@@ -267,9 +274,11 @@ fun HomeScreen(
         )
     }
 
-    // Stop the refreshing spinner when the devices list updates (i.e., scan finished)
+    // Stop spinner when scan results arrive
     LaunchedEffect(devices) { isRefreshing = false }
 }
+
+/* ------- Bottom sheet + small UI helpers (unchanged logic, documented) ------- */
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -345,17 +354,9 @@ private fun UsbPermissionSheet(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                OutlinedButton(
-                    onClick = onDismiss,
-                    modifier = Modifier.weight(1f)
-                ) { Text("Cancel") }
-
-                Button(
-                    onClick = onContinue,
-                    modifier = Modifier.weight(1f)
-                ) { Text("Continue") }
+                OutlinedButton(onDismiss, modifier = Modifier.weight(1f)) { Text("Cancel") }
+                Button(onContinue, modifier = Modifier.weight(1f)) { Text("Continue") }
             }
-
             Spacer(Modifier.height(8.dp))
         }
     }
@@ -366,7 +367,7 @@ private fun DisconnectConfirmDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    androidx.compose.material3.AlertDialog(
+    AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Disconnect device?") },
         text = {
@@ -375,19 +376,12 @@ private fun DisconnectConfirmDialog(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         },
-        confirmButton = {
-            Button(onClick = onConfirm) { Text("Disconnect") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        }
+        confirmButton = { Button(onClick = onConfirm) { Text("Disconnect") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
 
-
-/* ------------------------------ Device Picker Sheet ------------------------------ */
-
-@OptIn(ExperimentalAnimationApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalAnimationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun DevicePickerSheet(
     devices: List<UiDevice>,
@@ -400,18 +394,14 @@ private fun DevicePickerSheet(
     val scope = rememberCoroutineScope()
     val haptics = LocalHapticFeedback.current
 
-    var query by remember { mutableStateOf("") }
     var availableOnly by remember { mutableStateOf(true) }
     var connectingId by remember { mutableStateOf<String?>(null) }
     var connectedId by remember { mutableStateOf<String?>(null) }
 
-    val filtered = remember(devices, query, availableOnly) {
+    val filtered = remember(devices, availableOnly) {
         devices
             .filter { if (availableOnly) it.available else true }
-            .filter { query.isBlank() || it.name.contains(query, ignoreCase = true) }
-            .sortedWith(
-                compareByDescending<UiDevice> { it.available }.thenBy { it.name.lowercase() }
-            )
+            .sortedWith(compareByDescending<UiDevice> { it.available }.thenBy { it.name.lowercase() })
     }
 
     ModalBottomSheet(
@@ -421,7 +411,6 @@ private fun DevicePickerSheet(
         tonalElevation = 8.dp,
         containerColor = MaterialTheme.colorScheme.surface
     ) {
-        // Title + actions
         SheetTopBar(
             onClose = { scope.launch { sheetState.hide(); onDismiss() } },
             onScan = {
@@ -431,13 +420,11 @@ private fun DevicePickerSheet(
             isRefreshing = isRefreshing
         )
 
-        // filter
         SheetSearchRow(
             availableOnly = availableOnly,
             onToggleAvailable = { availableOnly = it }
         )
 
-        // Pull-to-refresh list
         val pullState = rememberPullToRefreshState()
         PullToRefreshBox(
             isRefreshing = isRefreshing,
@@ -448,10 +435,7 @@ private fun DevicePickerSheet(
                 .navigationBarsPadding()
         ) {
             if (filtered.isEmpty()) {
-                EmptySheetState(
-                    isRefreshing = isRefreshing,
-                    onScan = onRefresh
-                )
+                EmptySheetState(isRefreshing = isRefreshing, onScan = onRefresh)
             } else {
                 LazyColumn(
                     modifier = Modifier
@@ -479,7 +463,6 @@ private fun DevicePickerSheet(
                                     connectedId = null
                                     scope.launch {
                                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        // tiny flourish to show progress while VM connects
                                         delay(250)
                                         onConnect(device)
                                         connectedId = device.name
@@ -533,7 +516,6 @@ private fun SheetTopBar(
             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
             modifier = Modifier.weight(1f)
         )
-
         FilledTonalButton(
             onClick = onScan,
             enabled = !isRefreshing,
@@ -544,10 +526,7 @@ private fun SheetTopBar(
             Spacer(Modifier.width(6.dp))
             Text(if (isRefreshing) "Scanning…" else "Scan")
         }
-
-        IconButton(onClick = onClose) {
-            Icon(Icons.Default.Close, contentDescription = "Close")
-        }
+        IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "Close") }
     }
 }
 
@@ -561,13 +540,11 @@ private fun SheetSearchRow(
             FilterChip(
                 selected = !availableOnly,
                 onClick = { onToggleAvailable(false) },
-                label = { Text("All") }
-            )
+                label = { Text("All") })
             FilterChip(
                 selected = availableOnly,
                 onClick = { onToggleAvailable(true) },
-                label = { Text("Available") }
-            )
+                label = { Text("Available") })
         }
         Spacer(Modifier.height(4.dp))
     }
@@ -672,11 +649,7 @@ private fun DevicePickerRow(
             Spacer(Modifier.width(12.dp))
 
             Column(Modifier.weight(1f)) {
-                Text(
-                    device.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1
-                )
+                Text(device.name, style = MaterialTheme.typography.titleMedium, maxLines = 1)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     AvailabilityDot(available = device.available)
                     Spacer(Modifier.width(6.dp))
@@ -714,12 +687,11 @@ private fun DevicePickerRow(
                         onClick = {},
                         enabled = false,
                         leadingIcon = { Icon(Icons.Default.Check, null) },
-                        label = { Text("Connected") }
-                    )
+                        label = { Text("Connected") })
 
                     connecting -> {
                         FilledTonalButton(onClick = {}, enabled = false) {
-                            androidx.compose.material3.CircularProgressIndicator(
+                            CircularProgressIndicator(
                                 strokeWidth = 2.dp,
                                 modifier = Modifier.size(16.dp)
                             )
@@ -764,7 +736,7 @@ private fun AvailabilityDot(available: Boolean) {
     )
 }
 
-/* ------------------------------ Existing Composables (unchanged) ------------------------------ */
+/* ------- Reused smaller pieces (unchanged logic, documented) ------- */
 
 @Composable
 fun ConnectionStateCard(state: ConnectivityStatus) {

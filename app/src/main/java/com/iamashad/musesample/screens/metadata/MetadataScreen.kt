@@ -51,6 +51,19 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import kotlin.math.pow
 
+/**
+ * Form for saving a captured recording as a Session.
+ *
+ * UX decisions:
+ * - Validates only essential fields (name, patientId, age), everything else optional.
+ * - BMI is derived live from height/weight and unit system (metric or imperial).
+ * - On save, both domain [Session] (for DB) and [PcgReportMeta] (for PDF) are built
+ *   with already formatted display strings.
+ *
+ * Navigation:
+ * - Caller passes [wavPath] (may be empty if VM will provide a last path).
+ * - On successful save, invokes [onSaved] (the nav host moves to Session list).
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MetadataScreen(
@@ -60,7 +73,7 @@ fun MetadataScreen(
 ) {
     val focus = LocalFocusManager.current
 
-    // --- STATE ---
+    // ---- Form state ----
     var patientName by remember { mutableStateOf(TextFieldValue("")) }
     var patientId by remember { mutableStateOf(TextFieldValue("P-")) }
     var device by remember { mutableStateOf(TextFieldValue("TAAL")) }
@@ -73,7 +86,7 @@ fun MetadataScreen(
     var posture by remember { mutableStateOf(Posture.Standing) }
     var position by remember { mutableStateOf(AuscPosition.Mitral) }
 
-    // --- DERIVED STATE & VALIDATION ---
+    // ---- Derived values & validation (kept lightweight) ----
     val bmi by remember {
         derivedStateOf {
             val h = height.text.toDoubleOrNull()
@@ -96,50 +109,34 @@ fun MetadataScreen(
         weight.text.isBlank() || weight.text.toDoubleOrNull()?.let { it in 1.0..500.0 } == true
     val formOk = nameOk && idOk && ageOk && heightOk && weightOk
 
-    // --- UI ---
     Scaffold(
-        topBar = {
-            TopAppBar(title = { Text("Enter Session Metadata") })
-        },
+        topBar = { TopAppBar(title = { Text("Enter Session Metadata") }) },
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = {
-                    if (formOk) { // Guard clause to prevent clicks when disabled
-                        focus.clearFocus()
+                    if (!formOk) return@ExtendedFloatingActionButton
+                    focus.clearFocus()
 
-                        val session = Session(
-                            patientName = patientName.text.trim(),
-                            patientId = patientId.text.trim(),
-                            age = age.text.trim(),
-                            sessionStart = LocalDateTime.now()
-                                .format(DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm")),
-                            deviceModel = device.text.trim(),
-                            notes = notes.text.trim(),
-                            posture = posture.label,
-                            position = position.label,
-                            wavPath = wavPath,
-                            sex = s3x.label,
-                            height = if (height.text.isBlank()) "" else height.text + if (unit == UnitSystem.Metric) " cm" else " in",
-                            weight = if (weight.text.isBlank()) "" else weight.text + if (unit == UnitSystem.Metric) " kg" else " lb",
-                            bmi = bmi
-                        )
-                        val meta = PcgReportMeta(
-                            patientName = session.patientName,
-                            patientId = session.patientId,
-                            sessionStart = session.sessionStart,
-                            deviceModel = session.deviceModel,
-                            notes = session.notes,
-                            age = session.age,
-                            sex = "Sex: ${s3x.label}",
-                            height = session.height,
-                            weight = session.weight,
-                            bmi = session.bmi,
-                            posture = session.posture,
-                            position = session.position
-                        )
-                        vm.saveSession(session)
-                        onSaved()
-                    }
+                    // Build domain Session (DB) with formatted strings.
+                    val session = Session(
+                        patientName = patientName.text.trim(),
+                        patientId = patientId.text.trim(),
+                        age = age.text.trim(),
+                        sessionStart = LocalDateTime.now()
+                            .format(DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm")),
+                        deviceModel = device.text.trim(),
+                        notes = notes.text.trim(),
+                        posture = posture.label,
+                        position = position.label,
+                        wavPath = wavPath,
+                        sex = s3x.label,
+                        height = if (height.text.isBlank()) "" else height.text + if (unit == UnitSystem.Metric) " cm" else " in",
+                        weight = if (weight.text.isBlank()) "" else weight.text + if (unit == UnitSystem.Metric) " kg" else " lb",
+                        bmi = bmi
+                    )
+
+                    vm.saveSession(session) // Persist now; PDF can be generated later from sessions list.
+                    onSaved()
                 },
                 content = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -148,16 +145,14 @@ fun MetadataScreen(
                             contentDescription = "Save"
                         )
                         Spacer(Modifier.width(12.dp))
-                        Text(text = "Save Session")
+                        Text("Save Session")
                     }
                 },
-                // Manually set colors to reflect enabled/disabled state
-                containerColor = if (formOk) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.onSurface.copy(
-                    alpha = 0.12f
-                ),
-                contentColor = if (formOk) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface.copy(
-                    alpha = 0.38f
-                )
+                // Visual disabled state without extra logic in the Button
+                containerColor = if (formOk) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                contentColor = if (formOk) MaterialTheme.colorScheme.onPrimaryContainer
+                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
             )
         },
         floatingActionButtonPosition = FabPosition.Center
@@ -187,7 +182,7 @@ fun MetadataScreen(
                         label = { Text("Patient ID*") },
                         leadingIcon = {
                             Icon(
-                                painter = painterResource(R.drawable.id),
+                                painterResource(R.drawable.id),
                                 contentDescription = "Patient ID"
                             )
                         },
@@ -203,7 +198,7 @@ fun MetadataScreen(
                             isError = !ageOk,
                             leadingIcon = {
                                 Icon(
-                                    painter = painterResource(R.drawable.age),
+                                    painterResource(R.drawable.age),
                                     contentDescription = "Age"
                                 )
                             },
@@ -228,7 +223,8 @@ fun MetadataScreen(
                                 selected = unit == u,
                                 onClick = { unit = u },
                                 shape = SegmentedButtonDefaults.itemShape(index = i, count = 2),
-                                label = { Text(if (u == UnitSystem.Metric) "Metric (cm/kg)" else "Imperial (in/lb)") })
+                                label = { Text(if (u == UnitSystem.Metric) "Metric (cm/kg)" else "Imperial (in/lb)") }
+                            )
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -256,7 +252,7 @@ fun MetadataScreen(
                         label = { Text("BMI (auto-calculated)") },
                         leadingIcon = {
                             Icon(
-                                painter = painterResource(R.drawable.scale),
+                                painterResource(R.drawable.scale),
                                 contentDescription = "Scale"
                             )
                         },
@@ -272,7 +268,7 @@ fun MetadataScreen(
                         label = { Text("Device") },
                         leadingIcon = {
                             Icon(
-                                painter = painterResource(R.drawable.monitor_heart),
+                                painterResource(R.drawable.monitor_heart),
                                 contentDescription = "Monitor Heart"
                             )
                         },
@@ -284,13 +280,15 @@ fun MetadataScreen(
                         options = Posture.entries,
                         selected = posture,
                         onSelected = { posture = it },
-                        optionLabel = { it.label })
+                        optionLabel = { it.label }
+                    )
                     LabeledDropdown(
                         label = "Auscultation Position",
                         options = AuscPosition.entries,
                         selected = position,
                         onSelected = { position = it },
-                        optionLabel = { it.label })
+                        optionLabel = { it.label }
+                    )
                     OutlinedTextField(
                         value = notes,
                         onValueChange = { notes = it },
@@ -298,7 +296,7 @@ fun MetadataScreen(
                         placeholder = { Text("Optional observations...") },
                         leadingIcon = {
                             Icon(
-                                painter = painterResource(R.drawable.notes),
+                                painterResource(R.drawable.notes),
                                 contentDescription = "Notes"
                             )
                         },
@@ -312,7 +310,9 @@ fun MetadataScreen(
     }
 }
 
-/** Helper composable for creating a visually distinct section in the form. */
+/* ---------- Small reusable inputs (documented) ---------- */
+
+/** Visual section wrapper used throughout the form. */
 @Composable
 private fun FormSection(title: String, content: @Composable ColumnScope.() -> Unit) {
     Card(
@@ -329,7 +329,9 @@ private fun FormSection(title: String, content: @Composable ColumnScope.() -> Un
     }
 }
 
-/** Helper composable for a reusable dropdown menu. */
+/**
+ * Generic single-select dropdown with a read-only text field as the anchor.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun <T> LabeledDropdown(
@@ -354,18 +356,24 @@ private fun <T> LabeledDropdown(
             modifier = Modifier
                 .menuAnchor()
                 .fillMaxWidth(),
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) })
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) }
+        )
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             options.forEach {
                 DropdownMenuItem(
                     text = { Text(optionLabel(it)) },
-                    onClick = { onSelected(it); expanded = false })
+                    onClick = { onSelected(it); expanded = false }
+                )
             }
         }
     }
 }
 
-/** Helper composable for a number input field that filters for digits and one decimal point. */
+/**
+ * Numeric input that allows digits and a single decimal point.
+ * Optional [suffix] (unit) is rendered as a lightweight trailing adornment.
+ */
+
 @Composable
 private fun NumberField(
     state: TextFieldValue,
@@ -379,8 +387,9 @@ private fun NumberField(
     OutlinedTextField(
         value = state,
         onValueChange = { tv ->
-            val filtered =
-                tv.text.filterIndexed { index, c -> c.isDigit() || (c == '.' && tv.text.indexOf('.') == index) }
+            val filtered = tv.text.filterIndexed { index, c ->
+                c.isDigit() || (c == '.' && tv.text.indexOf('.') == index)
+            }
             onChange(tv.copy(text = filtered))
         },
         label = { Text(label) },

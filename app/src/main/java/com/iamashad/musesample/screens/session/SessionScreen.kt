@@ -69,24 +69,37 @@ import com.iamashad.musesample.generatePcgPdf
 import com.iamashad.musesample.model.PcgReportMeta
 import com.iamashad.musesample.model.Session
 import com.iamashad.musesample.repository.SessionRepository
-import com.iamashad.musesample.widgets.dialogs.ElegantAlertDialog
+import com.iamashad.musesample.widgets.ElegantAlertDialog
 import kotlinx.coroutines.launch
 import java.io.File
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
+/**
+ * Session history screen.
+ *
+ * Responsibilities:
+ * - Observe sessions Flow from repository and show loading until first emission.
+ * - Provide client-side filtering (search, position, time range, PDF state).
+ * - Provide client-side sorting and multi-select actions (share/delete).
+ * - Per-item actions: play WAV, generate/regenerate PDF, open/share PDF, delete.
+ *
+ * Notes:
+ * - Filtering uses the display date string; time windows (7/30 days) compare by LocalDate.
+ * - PDF generation uses the current session metadata to render a 2-page report via WebView.
+ */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun SessionListScreen(onBack: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // ⏳ Loading till first emission
+    // Source of truth
     val sessionsOrNull: List<Session>? by SessionRepository.sessions.collectAsState(initial = null)
     val isLoading = sessionsOrNull == null
     val sessions = sessionsOrNull.orEmpty()
 
-    // --- Filters (committed) ---
+    // ---- Filter state (committed) ----
     var query by remember { mutableStateOf(TextFieldValue("")) }
     var pdfFilter by remember { mutableStateOf(PdfFilter.All) }
     var positionFilter by remember { mutableStateOf("All") }
@@ -94,12 +107,12 @@ fun SessionListScreen(onBack: () -> Unit) {
     var sortKey by remember { mutableStateOf(SortKey.Date) }
     var sortOrder by remember { mutableStateOf(SortOrder.Desc) }
 
-    val uniquePositions = remember(sessions) {
-        listOf("All") + sessions.map { it.position }.distinct().sorted()
-    }
+    // Position facets for chips + searchable list in bottom sheet
+    val uniquePositions =
+        remember(sessions) { listOf("All") + sessions.map { it.position }.distinct().sorted() }
     val topPositions = remember(uniquePositions) { uniquePositions.filter { it != "All" }.take(8) }
 
-    // Bottom sheet
+    // Bottom sheet (filters)
     val bottomSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var showBottomSheet by remember { mutableStateOf(false) }
 
@@ -108,7 +121,7 @@ fun SessionListScreen(onBack: () -> Unit) {
     val selectionMode = selectedIds.isNotEmpty()
     var showBulkDeleteDialog by remember { mutableStateOf(false) }
 
-    // --- Filtering + sorting ---
+    // ---- Filtering + sorting pipeline ----
     val today = LocalDate.now()
     val filtered =
         remember(sessions, query.text, pdfFilter, positionFilter, timeFilter, sortKey, sortOrder) {
@@ -146,13 +159,15 @@ fun SessionListScreen(onBack: () -> Unit) {
                 }
         }
 
-    // Prune selected when filtered list changes
+    // Keep selection valid as the visible list changes
     LaunchedEffect(filtered) {
-        val currentIds: Set<Long> = filtered.map { it.id }.toSet()
+        val currentIds = filtered.map { it.id }.toSet()
         selectedIds = selectedIds intersect currentIds
     }
 
-    // --- Bulk actions ---
+    // ---- Bulk actions ----
+
+    /** Share all selected PDFs in a single SEND_MULTIPLE intent. */
     fun shareSelected() {
         val files = filtered
             .filter { it.id in selectedIds }
@@ -164,7 +179,6 @@ fun SessionListScreen(onBack: () -> Unit) {
         val uris = files.map {
             FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", it)
         }
-
         val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
             type = "application/pdf"
             putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
@@ -173,6 +187,7 @@ fun SessionListScreen(onBack: () -> Unit) {
         ctx.startActivity(Intent.createChooser(intent, "Share PDFs"))
     }
 
+    /** Delete all selected sessions from the encrypted database. */
     fun deleteSelected() {
         val targets = filtered.filter { it.id in selectedIds }
         targets.forEach { SessionRepository.delete(it) }
@@ -186,6 +201,7 @@ fun SessionListScreen(onBack: () -> Unit) {
                 timeFilter != TimeFilter.All ||
                 sortKey != SortKey.Date || sortOrder != SortOrder.Desc
 
+    // ---- Scaffolding: top bars vary by selection mode ----
     Scaffold(
         topBar = {
             if (selectionMode) {
@@ -200,8 +216,10 @@ fun SessionListScreen(onBack: () -> Unit) {
                         }
                     },
                     actions = {
-                        val allIds: Set<Long> = filtered.map { it.id }.toSet()
+                        val allIds = filtered.map { it.id }.toSet()
                         val allSelected = selectedIds.size == allIds.size && allIds.isNotEmpty()
+
+                        // Toggle select all / clear
                         IconButton(onClick = {
                             selectedIds = if (allSelected) emptySet() else allIds
                         }) {
@@ -212,6 +230,8 @@ fun SessionListScreen(onBack: () -> Unit) {
                                 contentDescription = if (allSelected) "Clear selection" else "Select all"
                             )
                         }
+
+                        // Share PDFs (enabled only if any selected has a PDF)
                         IconButton(
                             onClick = { shareSelected() },
                             enabled = filtered.any { it.id in selectedIds && !it.pdfPath.isNullOrBlank() }
@@ -221,6 +241,8 @@ fun SessionListScreen(onBack: () -> Unit) {
                                 contentDescription = "Share PDFs"
                             )
                         }
+
+                        // Delete
                         IconButton(onClick = { showBulkDeleteDialog = true }) {
                             Icon(Icons.Filled.Delete, contentDescription = "Delete selected")
                         }
@@ -257,6 +279,7 @@ fun SessionListScreen(onBack: () -> Unit) {
         }
     ) { pad ->
         if (isLoading) {
+            // First emission not yet available
             Box(
                 Modifier
                     .fillMaxSize()
@@ -269,7 +292,7 @@ fun SessionListScreen(onBack: () -> Unit) {
                     .padding(pad)
                     .padding(horizontal = 16.dp)
             ) {
-                // Search
+                // Search bar is hidden while multi-select is active
                 if (!selectionMode) {
                     OutlinedTextField(
                         value = query,
@@ -285,6 +308,7 @@ fun SessionListScreen(onBack: () -> Unit) {
                 if (filtered.isEmpty()) {
                     EmptyState()
                 } else {
+                    // Group by day for compact readability
                     val grouped = filtered
                         .groupBy { parseToLocalDate(it.sessionStart) ?: LocalDate.MIN }
                         .toSortedMap(compareByDescending { it })
@@ -316,11 +340,13 @@ fun SessionListScreen(onBack: () -> Unit) {
                                             if (isSelectedItem) selectedIds - s.id else selectedIds + s.id
                                     },
                                     onPlay = {
+                                        // Tap acts as select when in selection mode
                                         if (selectionMode) {
                                             selectedIds =
                                                 if (isSelectedItem) selectedIds - s.id else selectedIds + s.id
                                             return@SessionCard
                                         }
+                                        // Launch external audio player
                                         val wav = File(s.wavPath)
                                         if (!wav.exists()) return@SessionCard
                                         val uri = FileProvider.getUriForFile(
@@ -333,6 +359,7 @@ fun SessionListScreen(onBack: () -> Unit) {
                                     },
                                     onGeneratePdf = {
                                         if (selectionMode) return@SessionCard
+                                        // Render PDF off the main thread and persist path
                                         scope.launch {
                                             val pdf = generatePcgPdf(
                                                 context = ctx,
@@ -411,9 +438,9 @@ fun SessionListScreen(onBack: () -> Unit) {
         }
     }
 
-    // --- Filters Bottom Sheet 2.1 (no duplicate position list) ---
+    // ---- Filters Bottom Sheet ----
     if (showBottomSheet) {
-        // Drafts so user can cancel
+        // Draft copies so user can cancel changes
         var draftPdf by remember(pdfFilter) { mutableStateOf(pdfFilter) }
         var draftPosition by remember(positionFilter) { mutableStateOf(positionFilter) }
         var draftTime by remember(timeFilter) { mutableStateOf(timeFilter) }
@@ -434,7 +461,7 @@ fun SessionListScreen(onBack: () -> Unit) {
         ) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
 
-                // PDF
+                // PDF state
                 Text("PDF status", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
                 SingleChoiceSegmentedButtonRow {
@@ -455,7 +482,7 @@ fun SessionListScreen(onBack: () -> Unit) {
                 HorizontalDivider()
                 Spacer(Modifier.height(16.dp))
 
-                // Time
+                // Time range
                 Text("Time range", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
                 SingleChoiceSegmentedButtonRow {
@@ -481,11 +508,9 @@ fun SessionListScreen(onBack: () -> Unit) {
                 HorizontalDivider()
                 Spacer(Modifier.height(16.dp))
 
-                // Position — single, searchable chips
+                // Position single-select chips (popular first, then full list)
                 Text("Position", style = MaterialTheme.typography.titleMedium)
-
                 Spacer(Modifier.height(10.dp))
-
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -496,10 +521,9 @@ fun SessionListScreen(onBack: () -> Unit) {
                         onClick = { draftPosition = "All" },
                         label = { Text("All") },
                         leadingIcon = if (draftPosition == "All") {
-                            { Icon(Icons.Filled.Check, contentDescription = null) }
+                            { Icon(Icons.Filled.Check, null) }
                         } else null
                     )
-
                     // Popular
                     topPositions.forEach { pos ->
                         FilterChip(
@@ -507,24 +531,21 @@ fun SessionListScreen(onBack: () -> Unit) {
                             onClick = { draftPosition = pos },
                             label = { Text(pos) },
                             leadingIcon = if (draftPosition == pos) {
-                                { Icon(Icons.Filled.Check, contentDescription = null) }
+                                { Icon(Icons.Filled.Check, null) }
                             } else null
                         )
                     }
-
-                    // Search results (excluding ones already shown in topPositions)
-                    filteredPositions
-                        .filterNot { it in topPositions }
-                        .forEach { pos ->
-                            FilterChip(
-                                selected = draftPosition == pos,
-                                onClick = { draftPosition = pos },
-                                label = { Text(pos) },
-                                leadingIcon = if (draftPosition == pos) {
-                                    { Icon(Icons.Filled.Check, contentDescription = null) }
-                                } else null
-                            )
-                        }
+                    // Full list (minus already shown)
+                    filteredPositions.filterNot { it in topPositions }.forEach { pos ->
+                        FilterChip(
+                            selected = draftPosition == pos,
+                            onClick = { draftPosition = pos },
+                            label = { Text(pos) },
+                            leadingIcon = if (draftPosition == pos) {
+                                { Icon(Icons.Filled.Check, null) }
+                            } else null
+                        )
+                    }
                 }
 
                 Spacer(Modifier.height(16.dp))
@@ -545,37 +566,25 @@ fun SessionListScreen(onBack: () -> Unit) {
                     }
                 }
                 Spacer(Modifier.height(10.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Order", style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.width(12.dp))
                     FilterChip(
                         selected = draftSortOrder == SortOrder.Desc,
                         onClick = { draftSortOrder = SortOrder.Desc },
                         label = { Text("Desc") },
-                        leadingIcon = {
-                            Icon(
-                                painterResource(R.drawable.arrow_downward),
-                                contentDescription = null
-                            )
-                        }
+                        leadingIcon = { Icon(painterResource(R.drawable.arrow_downward), null) }
                     )
                     Spacer(Modifier.width(8.dp))
                     FilterChip(
                         selected = draftSortOrder == SortOrder.Asc,
                         onClick = { draftSortOrder = SortOrder.Asc },
                         label = { Text("Asc") },
-                        leadingIcon = {
-                            Icon(
-                                painterResource(R.drawable.arrow_upward),
-                                contentDescription = null
-                            )
-                        }
+                        leadingIcon = { Icon(painterResource(R.drawable.arrow_upward), null) }
                     )
                 }
 
-                // Sticky action bar
+                // Actions
                 Spacer(Modifier.height(18.dp))
                 HorizontalDivider()
                 Row(
@@ -595,7 +604,6 @@ fun SessionListScreen(onBack: () -> Unit) {
                     }) { Text("RESET") }
 
                     Button(onClick = {
-                        // Commit
                         pdfFilter = draftPdf
                         positionFilter = draftPosition
                         timeFilter = draftTime
@@ -608,7 +616,7 @@ fun SessionListScreen(onBack: () -> Unit) {
         }
     }
 
-    // --- Bulk Delete Dialog ---
+    // ---- Bulk Delete Confirmation ----
     if (showBulkDeleteDialog) {
         ElegantAlertDialog(
             title = "Delete ${selectedIds.size} session(s)",
@@ -626,8 +634,14 @@ fun SessionListScreen(onBack: () -> Unit) {
     }
 }
 
-// region card + helpers
+/* ---------- Card + helpers ---------- */
 
+/**
+ * One row in the list representing a saved session, with:
+ * - Primary actions: Play WAV, Generate/Regenerate PDF.
+ * - Secondary actions: Open/Share PDF (when available), Delete.
+ * - Supports long-press to enter selection mode.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionCard(
@@ -653,6 +667,7 @@ fun SessionCard(
         shape = MaterialTheme.shapes.medium
     ) {
         Column(Modifier.padding(16.dp)) {
+            // Header: patient and timestamp; when selecting, show checkbox on the right
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -675,6 +690,7 @@ fun SessionCard(
                 if (selectionEnabled) {
                     Checkbox(checked = selected, onCheckedChange = { onToggleSelect() })
                 } else {
+                    // Quick PDF actions when not selecting
                     Row {
                         if (!session.pdfPath.isNullOrBlank()) {
                             IconButton(onClick = onOpenPdf) {
@@ -696,6 +712,7 @@ fun SessionCard(
 
             Spacer(Modifier.height(8.dp))
 
+            // Metadata chips (position, posture, BMI, device)
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -712,6 +729,7 @@ fun SessionCard(
 
             Spacer(Modifier.height(12.dp))
 
+            // Primary actions row
             if (!selectionEnabled) {
                 Row(
                     Modifier.fillMaxWidth(),
@@ -750,6 +768,7 @@ fun SessionCard(
         }
     }
 
+    // Per-item delete confirmation
     if (showDeleteDialog) {
         ElegantAlertDialog(
             title = "Delete Session",
@@ -767,6 +786,7 @@ fun SessionCard(
     }
 }
 
+/** Empty-results placeholder copy. */
 @Composable
 private fun EmptyState() {
     Column(
@@ -792,12 +812,16 @@ private fun EmptyState() {
     }
 }
 
+/* ---------- Date helpers ---------- */
+
+/** Parse the display timestamp (e.g., "05 Oct 2025, 14:30") into a LocalDate. */
 private fun parseToLocalDate(display: String): LocalDate? = runCatching {
     val dt =
         java.time.LocalDateTime.parse(display, DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm"))
     dt.toLocalDate()
 }.getOrNull()
 
+/** True if the display date is within the last [days] days from [today] (inclusive). */
 private fun isWithinDays(display: String, days: Int, today: LocalDate): Boolean {
     val d = parseToLocalDate(display) ?: return false
     return !d.isBefore(today.minusDays(days.toLong()))
