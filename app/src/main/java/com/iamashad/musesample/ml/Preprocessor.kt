@@ -3,6 +3,7 @@ package com.iamashad.musesample.ml
 
 import android.util.Log
 import com.iamashad.musesample.model.WindowedFeatures
+import com.iamashad.musesample.utils.TAG_PREPROCESS
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.exp
@@ -54,7 +55,7 @@ object Preprocessor {
         val c = 3
         val h = N_MELS
         val t = melSpecPerBand[0][0].size
-        val feat = Array(c) { ch -> Array(h) { FloatArray(t) } }
+        val feat = Array(c) { _ -> Array(h) { FloatArray(t) } }
         for (ch in 0 until c) {
             for (i in 0 until h) for (j in 0 until t) {
                 val power = melSpecPerBand[ch][i][j].coerceAtLeast(1e-12f)
@@ -64,20 +65,20 @@ object Preprocessor {
 
         // 5) Per-channel normalization across HxT (mean/std)
         for (ch in 0 until c) {
-            var sum = 0.0;
+            var sum = 0.0
             var sumsq = 0.0
-            val N = h * t
+            val normalize = h * t
             for (i in 0 until h) for (j in 0 until t) {
                 val v = feat[ch][i][j].toDouble()
                 sum += v; sumsq += v * v
             }
-            val mean = (sum / N).toFloat()
-            val variance = (sumsq / N - mean * mean).toFloat().coerceAtLeast(1e-12f)
+            val mean = (sum / normalize).toFloat()
+            val variance = (sumsq / normalize - mean * mean).toFloat().coerceAtLeast(1e-12f)
             val std = sqrt(variance.toDouble()).toFloat()
             for (i in 0 until h) for (j in 0 until t) {
                 feat[ch][i][j] = (feat[ch][i][j] - mean) / (std + 1e-6f)
             }
-            Log.d("PREPROC", "Ch $ch mean=${mean.format(4)} std=${std.format(4)}")
+            Log.d(TAG_PREPROCESS, "Ch $ch mean=${mean.format(4)} std=${std.format(4)}")
         }
 
         // 6) Windowing: cut overlapping windows of width WINDOW_LEN, hop STRIDE
@@ -149,12 +150,13 @@ object Preprocessor {
         val bq = Biquad()
         bq.setBandpass(sr.toDouble(), fc, q)
         val out = FloatArray(input.size)
-        var i = 0
-        var tmp = FloatArray(input.size)
-        bq.process(input, out)
-        // second stage to sharpen
-        bq.process(out, tmp)
+        val tmp = FloatArray(input.size)
+        // first pass: reset the filter state (fresh filter)
+        bq.process(input, out, resetBefore = true)
+        // second pass: do not reset, so cascade applies smoothly
+        bq.process(out, tmp, resetBefore = false)
         return tmp
+
     }
 
     // Hanning window
@@ -234,14 +236,17 @@ object Preprocessor {
 
 /** Simple second-order biquad filter (Direct Form 1) used for bandpass approximation. */
 private class Biquad {
-    private var a0 = 1.0;
-    private var a1 = 0.0;
+    private var a1 = 0.0
     private var a2 = 0.0
-    private var b0 = 1.0;
-    private var b1 = 0.0;
+    private var b0 = 1.0
+    private var b1 = 0.0
     private var b2 = 0.0
-    private var z1 = 0.0;
-    private var z2 = 0.0
+
+    // internal state (history of outputs/inputs depending on implementation)
+    private var x1 = 0.0
+    private var x2 = 0.0
+    private var y1 = 0.0
+    private var y2 = 0.0
 
     /**
      * Design a band-pass using bilinear transform from analog bandpass prototype:
@@ -250,44 +255,44 @@ private class Biquad {
     fun setBandpass(fs: Double, fc: Double, q: Double) {
         val omega = 2.0 * Math.PI * fc / fs
         val alpha = sin(omega) / (2.0 * q)
+        // standard RBJ bandpass (constant skirt gain, peak gain = Q)
         b0 = alpha
         b1 = 0.0
         b2 = -alpha
-        val A = 1.0
         val a0t = 1.0 + alpha
         a1 = -2.0 * cos(omega)
         a2 = 1.0 - alpha
-        // normalize to a0 = 1
-        a0 = 1.0
+        // normalize coefficients so a0 == 1
         b0 /= a0t; b1 /= a0t; b2 /= a0t; a1 /= a0t; a2 /= a0t
         // reset state
-        z1 = 0.0; z2 = 0.0
+        resetState()
     }
 
-    fun process(input: FloatArray, out: FloatArray) {
-        var n = 0
-        for (x in input) {
-            val inVal = x.toDouble()
-            val y = b0 * inVal + b1 * z1 + b2 * z2 - a1 * z1 - a2 * z2
-            out[n++] = y.toFloat()
-            // shift
-            z2 = z1
-            z1 = inVal
-        }
+    private fun resetState() {
+        x1 = 0.0; x2 = 0.0; y1 = 0.0; y2 = 0.0
     }
 
-    fun process(input: FloatArray, out: FloatArray, resetState: Boolean = false) {
-        if (resetState) {
-            z1 = 0.0; z2 = 0.0
-        }
+    /**
+     * Process input -> out with an option to reset internal filter state before processing.
+     *
+     * Implementation: Direct Form 1:
+     *   y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
+     */
+    fun process(input: FloatArray, out: FloatArray, resetBefore: Boolean = false) {
+        if (resetBefore) resetState()
         var i = 0
-        var s1 = 0.0;
-        var s2 = 0.0
+        var xi: Double
+        var yi: Double
         for (n in input.indices) {
-            val x = input[n].toDouble()
-            val y = b0 * x + b1 * s1 + b2 * s2 - a1 * s1 - a2 * s2
-            out[n] = y.toFloat()
-            s2 = s1; s1 = x
+            xi = input[n].toDouble()
+            yi = b0 * xi + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+            out[n] = yi.toFloat()
+            // shift histories
+            x2 = x1
+            x1 = xi
+            y2 = y1
+            y1 = yi
+            i++
         }
     }
 }

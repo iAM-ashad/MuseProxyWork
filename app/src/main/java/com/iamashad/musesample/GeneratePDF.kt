@@ -246,7 +246,7 @@ suspend fun generatePcgPdf(
     val segments = try {
         runSegmentationOverClip(
             context = context,
-            pcm = filtered.toFloatArray(),
+            pcm = filtered,
             originalSampleRate = sampleRate,
             datasetFlag = datasetFlag,
             metaFromReport = meta, // your PcgReportMeta

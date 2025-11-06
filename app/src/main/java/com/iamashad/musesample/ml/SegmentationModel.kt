@@ -28,7 +28,7 @@ class SegmentationModel(
                 assetLoaderContext.assets.open(assetPath).use { it.readBytes() }
             }
         } catch (t: Throwable) {
-            Log.e("PCG_SEG", "Failed to read model bytes: ${t.message}")
+            Log.e(TAG_PCG_SEG, "Failed to read model bytes: ${t.message}")
             throw t
         }
 
@@ -37,9 +37,9 @@ class SegmentationModel(
             session = env.createSession(modelBytes, opts)
             for ((name, info) in session.inputInfo) Log.i("PCG_SEG", "Input: $name -> $info")
             for ((name, info) in session.outputInfo) Log.i("PCG_SEG", "Output: $name -> $info")
-            Log.i("PCG_SEG", "ONNX model loaded OK (size=${modelBytes.size} bytes)")
+            Log.i(TAG_PCG_SEG, "ONNX model loaded OK (size=${modelBytes.size} bytes)")
         } catch (t: Throwable) {
-            Log.e("PCG_SEG", "Failed to create OrtSession: ${t.message}")
+            Log.e(TAG_PCG_SEG, "Failed to create OrtSession: ${t.message}")
             throw t
         }
     }

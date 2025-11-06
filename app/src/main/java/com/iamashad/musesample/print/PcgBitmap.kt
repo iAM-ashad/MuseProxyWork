@@ -129,12 +129,10 @@ fun buildStackedPcgBitmap(
                 canvas.drawRect(x0, rowTop, x1, rowBottom, borderPaint)
             }
         }
-
         // Draw the trace on top of overlays
         val segStartSec = rowStartSec
-        val segEndSec = rowEndSec
         val sStart = kotlin.math.floor(segStartSec * samplesPerSec).toInt().coerceAtLeast(0)
-        val sEnd = min(normalized.size, ceil(segEndSec * samplesPerSec).toInt())
+        val sEnd = min(normalized.size, ceil(rowEndSec * samplesPerSec).toInt())
         if (sEnd <= sStart + 1) continue
 
         val x0 = 0f
