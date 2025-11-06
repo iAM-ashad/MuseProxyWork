@@ -34,12 +34,11 @@ fun buildStackedPcgBitmap(
     widthPx: Int = 1900,
     heightPx: Int = 1200,
     rowSpacingPx: Int = 20,
-    segments: List<SegmentLabel> = emptyList(),        // optional segmentation overlays
-    minSegmentDurationSec: Float = 0.04f              // merge segments shorter than this
+    segments: List<SegmentLabel> = emptyList(),
+    minSegmentDurationSec: Float = 0.04f
 ): Bitmap {
     require(secondsTotal > 0f && normalized.isNotEmpty())
 
-    // optionally reduce speckle noise by merging very short segments
     val segs = mergeShortSegments(segments, minSegmentDurationSec)
 
     val rows = max(1, ceil(secondsTotal / segmentSec).toInt())
@@ -49,7 +48,6 @@ fun buildStackedPcgBitmap(
     val rowH = max(160, availableH / rows)
     val samplesPerSec = (normalized.size / secondsTotal).coerceAtLeast(1f)
 
-    // paints
     val topBottomPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = "#B0C4DE".toColorInt(); strokeWidth = 2f; style = Paint.Style.STROKE
     }
@@ -61,20 +59,19 @@ fun buildStackedPcgBitmap(
         color = Color.BLACK; strokeWidth = 2f; style = Paint.Style.STROKE
     }
 
-    // overlay paints per class (semi-transparent fills)
     val overlayPaints = arrayOf(
         Paint().apply {
             color = Color.argb(110, 220, 38, 38); style = Paint.Style.FILL
         },   // S1 - red
         Paint().apply {
             color = Color.argb(90, 34, 197, 94); style = Paint.Style.FILL
-        },   // Systole - green
+        },    // Systole - green
         Paint().apply {
             color = Color.argb(110, 37, 99, 235); style = Paint.Style.FILL
-        },  // S2 - blue
+        },   // S2 - blue
         Paint().apply {
             color = Color.argb(70, 255, 140, 0); style = Paint.Style.FILL
-        }    // Diastole - orange
+        }     // Diastole - orange
     )
     val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = "#0b4da2".toColorInt(); strokeWidth = 1.2f; style = Paint.Style.STROKE
@@ -94,43 +91,34 @@ fun buildStackedPcgBitmap(
     val canvas = Canvas(bmp)
     canvas.drawColor(Color.WHITE)
 
-    // For each row: draw borders, zero line, trace, and overlays overlapping this row.
     for (r in 0 until rows) {
         val rowTop = (topPadding + r * (rowH + rowSpacingPx)).toFloat()
         val rowBottom = rowTop + rowH
 
-        // Row borders
         canvas.drawLine(0f, rowTop, widthPx.toFloat(), rowTop, topBottomPaint)
         canvas.drawLine(0f, rowBottom, widthPx.toFloat(), rowBottom, topBottomPaint)
 
-        // Baseline (0)
         val zY = mapY(0f, rowTop.toInt(), rowBottom.toInt())
         canvas.drawLine(0f, zY, widthPx.toFloat(), zY, zeroPaint)
 
-        // Compute seconds covered by this row
         val rowStartSec = r * segmentSec
         val rowEndSec = min((r + 1) * segmentSec, secondsTotal)
 
-        // Draw segmentation overlays that intersect this row
         if (segs.isNotEmpty()) {
             for (seg in segs) {
                 val s0 = seg.startSec.coerceAtLeast(rowStartSec)
                 val s1 = seg.endSec.coerceAtMost(rowEndSec)
                 if (s1 <= s0) continue
-                // Map seconds -> x (left..right)
                 val rel0 = (s0 - rowStartSec) / (rowEndSec - rowStartSec)
                 val rel1 = (s1 - rowStartSec) / (rowEndSec - rowStartSec)
                 val x0 = rel0 * widthPx
                 val x1 = rel1 * widthPx
-                // paint rectangle covering full row band
                 val paint = overlayPaints.getOrNull(seg.label) ?: overlayPaints.last()
                 canvas.drawRect(x0, rowTop, x1, rowBottom, paint)
-                // optional border
                 canvas.drawRect(x0, rowTop, x1, rowBottom, borderPaint)
             }
         }
 
-        // Draw the trace on top of overlays
         val segStartSec = rowStartSec
         val segEndSec = rowEndSec
         val sStart = kotlin.math.floor(segStartSec * samplesPerSec).toInt().coerceAtLeast(0)
@@ -152,7 +140,7 @@ fun buildStackedPcgBitmap(
         canvas.drawPath(path, tracePaint)
     }
 
-    // Draw legend at bottom-left
+    // Legend
     val legendLeft = 12f
     var legendTop = heightPx - bottomPadding + 6f
     val boxSize = 18f
@@ -170,7 +158,7 @@ fun buildStackedPcgBitmap(
     return bmp
 }
 
-/** Merge extremely short segments into neighbor segments to reduce speckle visually. */
+/** Merge extremely short segments into neighbors to reduce speckle. */
 private fun mergeShortSegments(segs: List<SegmentLabel>, minDur: Float): List<SegmentLabel> {
     if (segs.isEmpty() || minDur <= 0f) return segs
     val out = mutableListOf<SegmentLabel>()
@@ -179,12 +167,10 @@ private fun mergeShortSegments(segs: List<SegmentLabel>, minDur: Float): List<Se
         val s = segs[i]
         val dur = cur.endSec - cur.startSec
         if (dur < minDur && out.isNotEmpty()) {
-            // merge short cur into previous if same label else into next by expanding previous end
             val prev = out.removeAt(out.lastIndex)
             val merged = if (prev.label == cur.label) {
                 SegmentLabel(prev.label, prev.startSec, cur.endSec)
             } else {
-                // merge by extending prev to cur.endSec (safer visually)
                 SegmentLabel(prev.label, prev.startSec, cur.endSec)
             }
             out.add(merged)
@@ -193,9 +179,7 @@ private fun mergeShortSegments(segs: List<SegmentLabel>, minDur: Float): List<Se
         }
         cur = s
     }
-    // push last
     out.add(cur)
-    // a second pass: if first segment is short, merge into next
     if (out.size >= 2) {
         val firstDur = out[0].endSec - out[0].startSec
         if (firstDur < minDur) {

@@ -1,3 +1,4 @@
+// package: com.iamashad.musesample.audio
 package com.iamashad.musesample.audio
 
 import android.util.Log
@@ -5,40 +6,21 @@ import com.iamashad.musesample.utils.TAG_PCG_DEBUG
 import java.io.File
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.floor
+import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Audio utilities for reading simple PCM16 WAV files, filtering, and downsampling
- * to a waveform suitable for UI rendering and PDF export.
- *
- * Scope & assumptions:
- * - PCM 16-bit little-endian samples.
- * - RIFF/WAVE format with standard "fmt " and "data" chunks.
- * - We parse chunks defensively (skip unknown chunks, stay within bounds).
- * - Multi-channel WAVs are stepped by frame size, effectively sampling one channel.
- *
- * Key steps in the pipeline:
- *  1) [readSampleRate] / [readNumChannels] → find stream metadata from "fmt " chunk.
- *  2) [readWavPcm16] → extract 16-bit PCM samples (as Float).
- *  3) [bandpassFilter] → crude 20–500 Hz band-pass targeting PCG energy.
- *  4) [downsampleWaveform] → envelope-style downsampling (max/min per bucket),
- *     normalized to ±1000 for consistent rendering scale.
+ * Audio utilities:
+ * - readWavPcm16 -> FloatArray normalized to [-1..1]
+ * - bandpassFilter -> biquad cascade (2nd-order sections)
+ * - lowpassFilter -> single biquad lowpass (optional double-cascade for steeper rolloff)
+ * - downsampleWaveform -> envelope-preserving downsample; accepts FloatArray
  */
 
-/**
- * Parse the WAV file and return PCM16 samples as Floats.
- *
- * @param wavFile The WAV file on disk.
- * @param numChannels Number of interleaved channels in the stream (from [readNumChannels]).
- * @return A list of sample values in the native PCM scale (±32768) as Float.
- *
- * Implementation notes:
- * - Locates the "data" chunk by scanning RIFF chunks.
- * - Reads 16-bit little-endian samples.
- * - Advances by frame size (channels * 2 bytes) so we effectively keep one channel's stream.
- */
-fun readWavPcm16(wavFile: File, numChannels: Int): List<Float> {
-    val bytes = wavFile.readBytes()
+/** Read 16-bit PCM WAV samples and return a normalized mono FloatArray (-1..1) */
+fun readWavPcm16(file: File, numChannels: Int): FloatArray {
+    val bytes = file.readBytes()
     require(bytes.size > 44) { "Invalid or too small WAV file" }
 
     var pos = 12 // skip RIFF header
@@ -52,161 +34,237 @@ fun readWavPcm16(wavFile: File, numChannels: Int): List<Float> {
         } catch (_: Exception) {
             break
         }
-        val chunkSize =
-            (bytes[pos + 4].toInt() and 0xFF) or
-                    ((bytes[pos + 5].toInt() and 0xFF) shl 8) or
-                    ((bytes[pos + 6].toInt() and 0xFF) shl 16) or
-                    ((bytes[pos + 7].toInt() and 0xFF) shl 24)
-
+        val chunkSize = readU32LE(bytes, pos + 4)
         pos += 8
         if (chunkId == "data") {
             dataStart = pos
             dataSize = chunkSize.coerceAtMost(bytes.size - pos)
             break
         } else {
-            // Skip within bounds if unknown chunk
             val safeSkip = chunkSize.coerceAtMost(bytes.size - pos)
             pos += safeSkip
         }
     }
 
-    Log.d(TAG_PCG_DEBUG, "WAV data chunk found: dataStart=$dataStart, dataSize=$dataSize, bytes.size=${bytes.size}")
+    Log.d(
+        TAG_PCG_DEBUG,
+        "WAV data chunk found: dataStart=$dataStart, dataSize=$dataSize, bytes.size=${bytes.size}"
+    )
 
     require(dataStart > 0 && dataSize > 0 && dataStart + dataSize <= bytes.size) {
         "Invalid WAV: No 'data' chunk found or file corrupted."
     }
 
-    val pcm = mutableListOf<Float>()
-    var i = dataStart
-    val end = (dataStart + dataSize).coerceAtMost(bytes.size)
-
     val bytesPerSample = 2
     val frameSize = numChannels * bytesPerSample
+    val end = (dataStart + dataSize).coerceAtMost(bytes.size)
+    val approxFrames = ((end - dataStart) / frameSize).coerceAtLeast(0)
 
-    Log.d(TAG_PCG_DEBUG, "PCM extraction: numChannels=$numChannels, frameSize=$frameSize bytes, initial i=$i, end=$end")
-
-    var samplesExtracted = 0
-    // Read one 16-bit sample per frame (effectively mono)
-    while (i + bytesPerSample <= end) {
+    val out = FloatArray(approxFrames)
+    var dst = 0
+    var i = dataStart
+    while (i + 1 < end && dst < approxFrames) {
         val lo = bytes[i].toInt() and 0xFF
         val hi = bytes[i + 1].toInt()
-        val sample = (hi shl 8) or lo
-        pcm.add(sample.toShort().toFloat())
-        samplesExtracted++
+        val sample = ((hi shl 8) or lo).toShort().toInt()
+        out[dst++] = sample / 32768.0f
         i += frameSize
     }
+    return if (dst != out.size) out.copyOf(dst) else out
+}
 
-    Log.d(TAG_PCG_DEBUG, "Finished PCM extraction. Total samples extracted: $samplesExtracted. Final pcm.size: ${pcm.size}")
-    return pcm
+/** Helper: read unsigned 32-bit LE from byte array safely. */
+private fun readU32LE(bytes: ByteArray, pos: Int): Int {
+    if (pos + 4 > bytes.size) return 0
+    return (bytes[pos].toInt() and 0xFF) or
+            ((bytes[pos + 1].toInt() and 0xFF) shl 8) or
+            ((bytes[pos + 2].toInt() and 0xFF) shl 16) or
+            ((bytes[pos + 3].toInt() and 0xFF) shl 24)
 }
 
 /**
- * Very lightweight band-pass in ~20–500 Hz for heart sounds.
- *
- * This is a simple 1-pole high-pass followed by 1-pole low-pass (not a precision filter).
- * Good enough to knock down DC/ultra-low and very high frequency noise for visualization.
+ * Biquad filter implementation (Direct Form 1).
+ * Designed to be reused for lowpass and bandpass designs.
+ */
+private class Biquad {
+    // coefficients (normalized so a0 == 1)
+    var b0 = 1.0
+    var b1 = 0.0
+    var b2 = 0.0
+    var a1 = 0.0
+    var a2 = 0.0
+
+    // state
+    private var x1 = 0.0
+    private var x2 = 0.0
+    private var y1 = 0.0
+    private var y2 = 0.0
+
+    private fun resetState() {
+        x1 = 0.0; x2 = 0.0; y1 = 0.0; y2 = 0.0
+    }
+
+    fun process(input: FloatArray, out: FloatArray, resetBefore: Boolean = true) {
+        if (resetBefore) resetState()
+        var n = 0
+        for (v in input) {
+            val x = v.toDouble()
+            val y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+            out[n++] = y.toFloat()
+            x2 = x1; x1 = x; y2 = y1; y1 = y
+        }
+    }
+
+    /**
+     * Design a band-pass using RBJ cookbook style (approximate band-pass).
+     * fc = center freq, q = quality factor
+     */
+    fun setBandpass(fs: Double, fc: Double, q: Double) {
+        val omega = 2.0 * Math.PI * fc / fs
+        val alpha = kotlin.math.sin(omega) / (2.0 * q)
+        // RBJ bandpass (constant skirt gain)
+        val b0t = alpha
+        val b1t = 0.0
+        val b2t = -alpha
+        val a0t = 1.0 + alpha
+        b0 = b0t / a0t; b1 = b1t / a0t; b2 = b2t / a0t
+        a1 = -2.0 * kotlin.math.cos(omega) / a0t
+        a2 = (1.0 - alpha) / a0t
+        resetState()
+    }
+
+    /**
+     * Design a lowpass (RBJ cookbook).
+     * q defaults to 0.707 (Butterworth-like)
+     */
+    fun setLowpass(fs: Double, fc: Double, q: Double = 0.707) {
+        val omega = 2.0 * Math.PI * fc / fs
+        val alpha = kotlin.math.sin(omega) / (2.0 * q)
+        val cosw = kotlin.math.cos(omega)
+
+        val b0t = (1.0 - cosw) / 2.0
+        val b1t = 1.0 - cosw
+        val b2t = (1.0 - cosw) / 2.0
+        val a0t = 1.0 + alpha
+
+        b0 = b0t / a0t
+        b1 = b1t / a0t
+        b2 = b2t / a0t
+        a1 = -2.0 * cosw / a0t
+        a2 = (1.0 - alpha) / a0t
+        resetState()
+    }
+}
+
+/**
+ * Robust bandpass using two-stage biquad cascade.
+ * Default 20..500 Hz approximates cardiac band.
  */
 fun bandpassFilter(
-    samples: List<Float>,
+    samples: FloatArray,
     sampleRate: Int,
     lowHz: Float = 20f,
     highHz: Float = 500f
-): List<Float> {
+): FloatArray {
+    if (samples.isEmpty()) return samples
+    val bw = (highHz - lowHz).coerceAtLeast(1f)
+    val fc = ((lowHz + highHz) / 2f).coerceAtLeast(1f)
+    val q = (fc / bw).coerceAtLeast(0.5f).toDouble()
+
+    val bq1 = Biquad()
+    bq1.setBandpass(sampleRate.toDouble(), fc.toDouble(), q)
+    val out1 = FloatArray(samples.size)
+    bq1.process(samples, out1, resetBefore = true)
+
+    val bq2 = Biquad()
+    bq2.setBandpass(sampleRate.toDouble(), fc.toDouble(), q)
+    val out2 = FloatArray(samples.size)
+    bq2.process(out1, out2, resetBefore = false)
+
+    return out2
+}
+
+/**
+ * Gentle lowpass to remove energy above cutoffHz.
+ * Use cascade (call twice) if you want steeper slope.
+ */
+fun lowpassFilter(
+    samples: FloatArray,
+    sampleRate: Int,
+    cutoffHz: Float = 200f,
+    q: Float = 0.707f,
+    cascade: Int = 1
+): FloatArray {
+    if (samples.isEmpty()) return samples
+    var cur = samples
+    for (i in 0 until cascade) {
+        val bq = Biquad()
+        bq.setLowpass(sampleRate.toDouble(), cutoffHz.toDouble(), q.toDouble())
+        val out = FloatArray(cur.size)
+        // reset state only on first pass
+        bq.process(cur, out, resetBefore = (i == 0))
+        cur = out
+    }
+    return cur
+}
+
+/**
+ * Envelope-preserving downsampling:
+ * - Accepts FloatArray (-1..1).
+ * - Emits max/min pair per bucket and scales to ±1000 for plotting.
+ */
+fun downsampleWaveform(samples: FloatArray, targetCount: Int): List<Float> {
     if (samples.isEmpty()) return emptyList()
-
-    val filtered = MutableList(samples.size) { 0f }
-    val omegaLow = (2 * Math.PI * lowHz / sampleRate).toFloat()
-    val omegaHigh = (2 * Math.PI * highHz / sampleRate).toFloat()
-
-    var yLow: Float
-    var yHigh: Float
-    var prevLow = 0f
-    var prevHigh = samples[0]
-
-    // Simple leaky integrators
-    val alphaLow = omegaLow / (omegaLow + 1)
-    val alphaHigh = 1 / (omegaHigh + 1)
-
-    for (i in 1 until samples.size) {
-        val x = samples[i]
-        // High-pass via simple differentiator + smoothing
-        yHigh = alphaHigh * (prevHigh + x - samples[i - 1])
-        // Then low-pass
-        yLow = prevLow + alphaLow * (yHigh - prevLow)
-        filtered[i] = yLow
-        prevLow = yLow
-        prevHigh = yHigh
-    }
-    return filtered
-}
-
-/**
- * Downsample a long signal into a compact, envelope-preserving sequence for plotting.
- *
- * Strategy:
- * - Split into buckets (targetCount/2 buckets because we output [max, min] per bucket).
- * - For each bucket, emit the local max and min (preserves spikes).
- * - Normalize end result to ±1000 for consistent UI/PDF scale.
- *
- * If the input is already short, just normalize it.
- */
-fun downsampleWaveform(samples: List<Float>, targetCount: Int): List<Float> {
-    if (samples.isEmpty() || samples.size <= targetCount) {
+    if (samples.size <= targetCount) {
         val maxAbs = samples.maxOfOrNull { abs(it) } ?: 1f
-        return samples.map { (it / maxAbs) * 1000f }
+        val scale = if (maxAbs <= 0f) 1f else 1000f / maxAbs
+        return samples.map { it * scale }
     }
 
-    val actualTarget = targetCount / 2          // two points (max, min) per bucket
+    val actualBuckets = max(1, targetCount / 2)
     val n = samples.size
-    val step = n.toFloat() / actualTarget       // bucket width in samples
+    val step = n.toFloat() / actualBuckets
 
-    val out = ArrayList<Float>(targetCount)
-    var currentStart = 0f
-
-    for (i in 0 until actualTarget) {
-        val start = currentStart.toInt()
-        val end = min(n, ceil(currentStart + step).toInt())
-
-        var maxVal = Float.NEGATIVE_INFINITY
-        var minVal = Float.POSITIVE_INFINITY
-
-        for (j in start until end) {
-            val sample = samples[j]
-            if (sample > maxVal) maxVal = sample
-            if (sample < minVal) minVal = sample
+    val out = ArrayList<Float>(actualBuckets * 2)
+    var startF = 0f
+    for (b in 0 until actualBuckets) {
+        val s = floor(startF).toInt()
+        val e = min(n, ceil(startF + step).toInt())
+        var maxV = Float.NEGATIVE_INFINITY
+        var minV = Float.POSITIVE_INFINITY
+        if (s >= e) {
+            maxV = 0f; minV = 0f
+        } else {
+            for (i in s until e) {
+                val v = samples[i]
+                if (v > maxV) maxV = v
+                if (v < minV) minV = v
+            }
         }
-
-        out.add(maxVal)
-        out.add(minVal)
-        currentStart += step
+        out.add(maxV)
+        out.add(minV)
+        startF += step
     }
 
-    val maxAbs = out.maxOf { abs(it) }.coerceAtLeast(1f)
-    return out.map { (it / maxAbs) * 1000f }
+    val maxAbs = out.maxOfOrNull { abs(it) }?.coerceAtLeast(1e-9f) ?: 1f
+    val scale = 1000f / maxAbs
+    return out.map { it * scale }
 }
 
-/**
- * Read the sample rate (Hz) from the "fmt " chunk. Falls back to 44100 if missing.
- */
+/** Read sample rate from WAV 'fmt ' chunk (fallback 44100). */
 fun readSampleRate(file: File): Int {
     val bytes = file.readBytes()
-    var i = 12 // skip RIFF header
-
+    var i = 12
     while (i + 8 < bytes.size) {
         val chunkId = String(bytes, i, 4)
-        val chunkSize =
-            (bytes[i + 4].toInt() and 0xFF) or
-                    ((bytes[i + 5].toInt() and 0xFF) shl 8) or
-                    ((bytes[i + 6].toInt() and 0xFF) shl 16) or
-                    ((bytes[i + 7].toInt() and 0xFF) shl 24)
-
+        val chunkSize = readU32LE(bytes, i + 4)
         if (chunkId == "fmt ") {
-            if (i + 16 + 4 <= bytes.size) {
-                // sampleRate is 4 bytes at offset +12 from start of "fmt " chunk
-                return (bytes[i + 12].toInt() and 0xFF) or
-                        ((bytes[i + 13].toInt() and 0xFF) shl 8) or
-                        ((bytes[i + 14].toInt() and 0xFF) shl 16) or
-                        ((bytes[i + 15].toInt() and 0xFF) shl 24)
+            val off = i + 12
+            if (off + 4 <= bytes.size) {
+                return (bytes[off].toInt() and 0xFF) or
+                        ((bytes[off + 1].toInt() and 0xFF) shl 8) or
+                        ((bytes[off + 2].toInt() and 0xFF) shl 16) or
+                        ((bytes[off + 3].toInt() and 0xFF) shl 24)
             }
         }
         i += 8 + chunkSize
@@ -214,26 +272,18 @@ fun readSampleRate(file: File): Int {
     return 44100
 }
 
-/**
- * Read the number of channels from the "fmt " chunk. Falls back to mono (1).
- */
+/** Read number of channels from WAV 'fmt ' chunk (fallback 1). */
 fun readNumChannels(file: File): Int {
     val bytes = file.readBytes()
-    var i = 12 // skip RIFF header
-
+    var i = 12
     while (i + 8 < bytes.size) {
         val chunkId = String(bytes, i, 4)
-        val chunkSize =
-            (bytes[i + 4].toInt() and 0xFF) or
-                    ((bytes[i + 5].toInt() and 0xFF) shl 8) or
-                    ((bytes[i + 6].toInt() and 0xFF) shl 16) or
-                    ((bytes[i + 7].toInt() and 0xFF) shl 24)
-
+        val chunkSize = readU32LE(bytes, i + 4)
         if (chunkId == "fmt ") {
-            // nChannels: 2 bytes at offset +10 from start of "fmt " chunk
-            if (i + 12 <= bytes.size) {
-                val channels = (bytes[i + 10].toInt() and 0xFF) or
-                        ((bytes[i + 11].toInt() and 0xFF) shl 8)
+            val off = i + 10
+            if (off + 2 <= bytes.size) {
+                val channels =
+                    (bytes[off].toInt() and 0xFF) or ((bytes[off + 1].toInt() and 0xFF) shl 8)
                 return channels.coerceAtLeast(1)
             }
         }
