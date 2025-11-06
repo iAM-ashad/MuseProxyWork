@@ -6,7 +6,8 @@ import android.util.Log
 import androidx.core.content.edit
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import com.iamashad.musesample.TAG_MUSE_SEC
+import com.iamashad.musesample.security.DbKeyStore.getOrCreatePassphrase
+import com.iamashad.musesample.utils.TAG_MUSE_SEC
 import java.security.SecureRandom
 
 /**

@@ -1,6 +1,7 @@
 package com.iamashad.musesample.audio
 
 import android.util.Log
+import com.iamashad.musesample.utils.TAG_PCG_DEBUG
 import java.io.File
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -69,7 +70,7 @@ fun readWavPcm16(wavFile: File, numChannels: Int): List<Float> {
         }
     }
 
-    Log.d("PCG_DEBUG", "WAV data chunk found: dataStart=$dataStart, dataSize=$dataSize, bytes.size=${bytes.size}")
+    Log.d(TAG_PCG_DEBUG, "WAV data chunk found: dataStart=$dataStart, dataSize=$dataSize, bytes.size=${bytes.size}")
 
     require(dataStart > 0 && dataSize > 0 && dataStart + dataSize <= bytes.size) {
         "Invalid WAV: No 'data' chunk found or file corrupted."
@@ -82,7 +83,7 @@ fun readWavPcm16(wavFile: File, numChannels: Int): List<Float> {
     val bytesPerSample = 2
     val frameSize = numChannels * bytesPerSample
 
-    Log.d("PCG_DEBUG", "PCM extraction: numChannels=$numChannels, frameSize=$frameSize bytes, initial i=$i, end=$end")
+    Log.d(TAG_PCG_DEBUG, "PCM extraction: numChannels=$numChannels, frameSize=$frameSize bytes, initial i=$i, end=$end")
 
     var samplesExtracted = 0
     // Read one 16-bit sample per frame (effectively mono)
@@ -95,7 +96,7 @@ fun readWavPcm16(wavFile: File, numChannels: Int): List<Float> {
         i += frameSize
     }
 
-    Log.d("PCG_DEBUG", "Finished PCM extraction. Total samples extracted: $samplesExtracted. Final pcm.size: ${pcm.size}")
+    Log.d(TAG_PCG_DEBUG, "Finished PCM extraction. Total samples extracted: $samplesExtracted. Final pcm.size: ${pcm.size}")
     return pcm
 }
 

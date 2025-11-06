@@ -4,8 +4,8 @@ import android.content.Context
 import android.util.Log
 import androidx.room.Room
 import androidx.room.RoomDatabase
-import com.iamashad.musesample.TAG_MUSE_DB
 import com.iamashad.musesample.security.DbKeyStore
+import com.iamashad.musesample.utils.TAG_MUSE_DB
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
 /**
@@ -44,7 +44,10 @@ object DbProvider {
             System.loadLibrary("sqlcipher")
             Log.i(TAG_MUSE_DB, "sqlcipher_loaded")
         } catch (t: Throwable) {
-            Log.e(TAG_MUSE_DB, "sqlcipher_load_fail | REASON=${t.javaClass.simpleName}: ${t.message}")
+            Log.e(
+                TAG_MUSE_DB,
+                "sqlcipher_load_fail | REASON=${t.javaClass.simpleName}: ${t.message}"
+            )
             throw t
         }
 

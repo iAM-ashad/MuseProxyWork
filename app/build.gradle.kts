@@ -1,3 +1,4 @@
+import com.android.build.api.dsl.Packaging
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -19,6 +20,18 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }// pickFirsts.add("**/*.onnx")
+
+    // pickFirsts.add("**/arm64-v8a/libonnxruntime.so")
+    fun Packaging.() {
+        jniLibs {
+            pickFirsts.add("**/libonnxruntime.so")
+            // pickFirsts.add("**/arm64-v8a/libonnxruntime.so")
+        }
+        resources {
+            pickFirsts.add("assets/ml/pcg_segmentation.onnx")
+            // pickFirsts.add("**/*.onnx")
+        }
     }
 
     buildTypes {
@@ -49,6 +62,9 @@ dependencies {
 
     //muse sdk
     implementation(files("libs/surr-core.aar"))
+
+    //ort mobile
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:latest.release")
 
     //room
     implementation("androidx.room:room-runtime:2.8.2")
