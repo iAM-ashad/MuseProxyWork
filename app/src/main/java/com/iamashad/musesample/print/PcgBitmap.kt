@@ -26,6 +26,7 @@ import kotlin.math.min
  * Colors:
  * 0 = S1 (red), 1 = Systole (green), 2 = S2 (blue), 3 = Diastole (orange)
  */
+
 fun buildStackedPcgBitmap(
     context: Context,
     normalized: List<Float>,

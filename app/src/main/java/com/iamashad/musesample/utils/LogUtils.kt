@@ -18,6 +18,7 @@ const val TAG_MUSE_DB = "MUSE_DB"   // Room/SQLCipher database lifecycle and DAO
 const val TAG_MUSE_SEC = "MUSE_SEC" // Security & key management (EncryptedSharedPreferences).
 const val TAG_PCG_DEBUG = "PCG_DEBUG"
 const val TAG_PCG_SEG = "PCG_SEG"
+const val TAG_SEG_DEBUG = "PCG_SEG_DEBUG"
 
 /** Return a formatted diagnostic string for a list of SegmentLabel. */
 fun dumpSegments(segments: List<SegmentLabel>): String {

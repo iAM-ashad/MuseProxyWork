@@ -14,7 +14,7 @@ suspend fun runSegmentationOverClip(
     originalSampleRate: Int,
     datasetFlag: Long = 0L,
     metaFromReport: PcgReportMeta? = null,
-    medianKernel: Int = 5,
+    medianKernel: Int = 7,
     inferenceBatchSize: Int = 8   // tune this for device
 ): List<SegmentLabel> = withContext(Dispatchers.Default) {
     Log.d(TAG_PCG_SEG, "Starting segmentation (pcm=${pcm.size}, sr=$originalSampleRate)")
@@ -53,5 +53,6 @@ suspend fun runSegmentationOverClip(
     val segments = Postprocessor.framesToSegments(fused, frameMs = 16f)
 
     Log.d(TAG_PCG_SEG, "Segmentation complete: ${segments.size} segments.")
+
     return@withContext segments
 }

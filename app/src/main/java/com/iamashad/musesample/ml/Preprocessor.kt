@@ -253,7 +253,6 @@ private class Biquad {
         b0 = alpha
         b1 = 0.0
         b2 = -alpha
-        val A = 1.0
         val a0t = 1.0 + alpha
         a1 = -2.0 * cos(omega)
         a2 = 1.0 - alpha
@@ -273,21 +272,6 @@ private class Biquad {
             // shift
             z2 = z1
             z1 = inVal
-        }
-    }
-
-    fun process(input: FloatArray, out: FloatArray, resetState: Boolean = false) {
-        if (resetState) {
-            z1 = 0.0; z2 = 0.0
-        }
-        var i = 0
-        var s1 = 0.0;
-        var s2 = 0.0
-        for (n in input.indices) {
-            val x = input[n].toDouble()
-            val y = b0 * x + b1 * s1 + b2 * s2 - a1 * s1 - a2 * s2
-            out[n] = y.toFloat()
-            s2 = s1; s1 = x
         }
     }
 }

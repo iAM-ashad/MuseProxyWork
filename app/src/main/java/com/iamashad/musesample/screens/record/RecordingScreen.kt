@@ -15,26 +15,57 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material3.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Divider
+import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -53,7 +84,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -63,6 +93,7 @@ import kotlin.math.roundToInt
  * - Controls start/stop, duration limit, pre-filter and pre-amp options.
  * - Emits a navigation effect with the recorded WAV path when stopping.
  */
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecordingScreen(
@@ -100,6 +131,7 @@ fun RecordingScreen(
             vm.toggleRecording()
         }
     }
+
     fun ensureMicPermissionThenStart() {
         if (hasMicPermission) {
             vm.toggleRecording()
@@ -144,11 +176,33 @@ fun RecordingScreen(
     var showReference by remember { mutableStateOf(false) }
     var secondsElapsed by remember(state == RecordingState.Recording) { mutableIntStateOf(0) }
     LaunchedEffect(state == RecordingState.Recording, selectedDuration) {
-        if (state != RecordingState.Recording) { secondsElapsed = 0; return@LaunchedEffect }
+        if (state != RecordingState.Recording) {
+            secondsElapsed = 0; return@LaunchedEffect
+        }
         secondsElapsed = 0
         while (isActive) {
             delay(1000); secondsElapsed++
-            selectedDuration?.let { if (secondsElapsed >= it) { vm.toggleRecording(); break } }
+            selectedDuration?.let {
+                if (secondsElapsed >= it) {
+                    vm.toggleRecording(); break
+                }
+            }
+        }
+    }
+
+    // Trigger to clear the waveform when a new recording starts
+    var clearWaveformTrigger by remember { mutableStateOf(false) }
+    LaunchedEffect(state) {
+        if (state == RecordingState.Recording) {
+            // This ensures the view is cleared when a new recording starts
+            clearWaveformTrigger = true
+        }
+    }
+    // After the trigger is consumed, reset it
+    LaunchedEffect(clearWaveformTrigger) {
+        if (clearWaveformTrigger) {
+            delay(100) // Give update block time to run
+            clearWaveformTrigger = false
         }
     }
 
@@ -188,6 +242,8 @@ fun RecordingScreen(
             paddingTop = inner,
             state = state,
             samples = samples,
+            sampleRate = sampleRate,
+            clearTrigger = clearWaveformTrigger,
             bpm = bpm,
             selectedDuration = selectedDuration,
             onSelectDuration = vm::setRecordingDuration
@@ -260,6 +316,8 @@ private fun RecordingScreenContent(
     paddingTop: PaddingValues,
     state: RecordingState,
     samples: FloatArray?,
+    sampleRate: Int?,
+    clearTrigger: Boolean,
     bpm: Int?,
     selectedDuration: Int?,
     onSelectDuration: (Int?) -> Unit
@@ -282,7 +340,9 @@ private fun RecordingScreenContent(
                 .fillMaxWidth()
                 .weight(1f),
             isActive = isRecording,
-            samples = samples
+            samples = samples,
+            sampleRate = sampleRate,
+            clearTrigger = clearTrigger
         )
     }
 }
@@ -298,7 +358,10 @@ private fun DurationPicker(
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
         options.forEachIndexed { index, value ->
             val isSelected = selected == value
-            FilterChip(selected = isSelected, onClick = { onSelect(value) }, label = { Text(labels[index]) })
+            FilterChip(
+                selected = isSelected,
+                onClick = { onSelect(value) },
+                label = { Text(labels[index]) })
         }
     }
 }
@@ -320,18 +383,33 @@ private fun BottomControls(
     val haptics = LocalHapticFeedback.current
     Surface(tonalElevation = 3.dp) {
         Row(
-            Modifier.fillMaxWidth().padding(16.dp),
+            Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            FilledTonalButton(onClick = onOpenReference, enabled = true, modifier = Modifier.weight(1f)) {
+            FilledTonalButton(
+                onClick = onOpenReference,
+                enabled = true,
+                modifier = Modifier.weight(1f)
+            ) {
                 Icon(Icons.Outlined.Info, contentDescription = null)
                 Spacer(Modifier.size(8.dp)); Text("Info")
             }
-            RecordButton(recording = isRecording, onClick = { onToggle(); haptics.performHapticFeedback(HapticFeedbackType.LongPress) })
-            val displaySec = totalDuration?.let { (it - secondsElapsed).coerceAtLeast(0) } ?: secondsElapsed
-            val min = displaySec / 60; val sec = displaySec % 60
-            Text(text = "%02d:%02d".format(min, sec), style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.End, modifier = Modifier.weight(1f))
+            RecordButton(
+                recording = isRecording,
+                onClick = { onToggle(); haptics.performHapticFeedback(HapticFeedbackType.LongPress) })
+            val displaySec =
+                totalDuration?.let { (it - secondsElapsed).coerceAtLeast(0) } ?: secondsElapsed
+            val min = displaySec / 60;
+            val sec = displaySec % 60
+            Text(
+                text = "%02d:%02d".format(min, sec),
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.End,
+                modifier = Modifier.weight(1f)
+            )
         }
     }
 }
@@ -340,9 +418,16 @@ private fun BottomControls(
 @Composable
 private fun AuscultationReferenceSheet(onClose: () -> Unit) {
     Column(
-        Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp)
+        Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
             Text("Anterior auscultation points", style = MaterialTheme.typography.titleMedium)
             TextButton(onClick = onClose) { Text("Close") }
         }
@@ -353,15 +438,30 @@ private fun AuscultationReferenceSheet(onClose: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(12.dp))
-        ZoomableImageCard(imageRes = R.drawable.auscultation, contentDescription = "Anterior auscultation points reference")
+        ZoomableImageCard(
+            imageRes = R.drawable.auscultation,
+            contentDescription = "Anterior auscultation points reference"
+        )
         Spacer(Modifier.height(12.dp))
         Divider()
         Spacer(Modifier.height(6.dp))
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            LegendRow(color = MaterialTheme.colorScheme.primary,  label = "Aortic — 2nd ICS, Right sternal border")
-            LegendRow(color = MaterialTheme.colorScheme.secondary,label = "Pulmonic — 2nd ICS, Left sternal border")
-            LegendRow(color = MaterialTheme.colorScheme.tertiary, label = "Tricuspid — 4th–5th ICS, Left sternal border")
-            LegendRow(color = MaterialTheme.colorScheme.error,    label = "Mitral (Apex) — 5th ICS, Mid-clavicular line")
+            LegendRow(
+                color = MaterialTheme.colorScheme.primary,
+                label = "Aortic — 2nd ICS, Right sternal border"
+            )
+            LegendRow(
+                color = MaterialTheme.colorScheme.secondary,
+                label = "Pulmonic — 2nd ICS, Left sternal border"
+            )
+            LegendRow(
+                color = MaterialTheme.colorScheme.tertiary,
+                label = "Tricuspid — 4th–5th ICS, Left sternal border"
+            )
+            LegendRow(
+                color = MaterialTheme.colorScheme.error,
+                label = "Mitral (Apex) — 5th ICS, Mid-clavicular line"
+            )
         }
         Spacer(Modifier.height(16.dp))
         Button(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("Got it") }
@@ -369,9 +469,15 @@ private fun AuscultationReferenceSheet(onClose: () -> Unit) {
     }
 }
 
-@Composable private fun LegendRow(color: Color, label: String) {
+@Composable
+private fun LegendRow(color: Color, label: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(10.dp).clip(CircleShape).background(color))
+        Box(
+            Modifier
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
         Spacer(Modifier.width(8.dp)); Text(label, style = MaterialTheme.typography.bodySmall)
     }
 }
@@ -384,20 +490,30 @@ private fun ZoomableImageCard(imageRes: Int, contentDescription: String?) {
     var offsetY by remember { mutableFloatStateOf(0f) }
     ElevatedCard(Modifier.fillMaxWidth()) {
         Box(
-            Modifier.fillMaxWidth().height(280.dp).background(MaterialTheme.colorScheme.surface)
+            Modifier
+                .fillMaxWidth()
+                .height(280.dp)
+                .background(MaterialTheme.colorScheme.surface)
                 .pointerInput(Unit) {
                     detectTransformGestures { _, pan, zoom, _ ->
                         scale = (scale * zoom).coerceIn(1f, 4f)
-                        if (scale > 1f) { offsetX += pan.x; offsetY += pan.y } else { offsetX = 0f; offsetY = 0f }
+                        if (scale > 1f) {
+                            offsetX += pan.x; offsetY += pan.y
+                        } else {
+                            offsetX = 0f; offsetY = 0f
+                        }
                     }
                 }
         ) {
             Image(
                 painter = painterResource(imageRes),
                 contentDescription = contentDescription,
-                modifier = Modifier.align(Alignment.Center).graphicsLayer {
-                    translationX = offsetX; translationY = offsetY; scaleX = scale; scaleY = scale
-                }
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .graphicsLayer {
+                        translationX = offsetX; translationY = offsetY; scaleX = scale; scaleY =
+                        scale
+                    }
             )
         }
     }
@@ -407,10 +523,10 @@ private fun ZoomableImageCard(imageRes: Int, contentDescription: String?) {
 @Composable
 private fun StatusCard(state: RecordingState, bpm: Int?) {
     val (label, color) = when (state) {
-        RecordingState.Idle -> "Ready"      to Color(0xFF2E7D32)
+        RecordingState.Idle -> "Ready" to Color(0xFF2E7D32)
         RecordingState.Recording -> "Recording…" to MaterialTheme.colorScheme.error
-        RecordingState.Saving -> "Saving…"  to MaterialTheme.colorScheme.primary
-        RecordingState.Complete -> "Saved"  to MaterialTheme.colorScheme.secondary
+        RecordingState.Saving -> "Saving…" to MaterialTheme.colorScheme.primary
+        RecordingState.Complete -> "Saved" to MaterialTheme.colorScheme.secondary
     }
     val dotColor by animateColorAsState(color, label = "statusColor")
     ElevatedCard(Modifier.fillMaxWidth()) {
@@ -419,7 +535,9 @@ private fun StatusCard(state: RecordingState, bpm: Int?) {
             Spacer(Modifier.size(10.dp))
             Text(label, style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.weight(1f))
-            if (state == RecordingState.Recording) { HeartRatePill(bpm = bpm) }
+            if (state == RecordingState.Recording) {
+                HeartRatePill(bpm = bpm)
+            }
         }
     }
 }
@@ -427,98 +545,40 @@ private fun StatusCard(state: RecordingState, bpm: Int?) {
 /** Small rounded pill showing the current heart rate estimate. */
 @Composable
 private fun HeartRatePill(bpm: Int?) {
-    Surface(color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer, shape = CircleShape) {
-        Text(text = if (bpm != null) "$bpm bpm" else "-- bpm", modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp), style = MaterialTheme.typography.labelLarge)
+    Surface(
+        color = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        shape = CircleShape
+    ) {
+        Text(
+            text = if (bpm != null) "$bpm bpm" else "-- bpm",
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            style = MaterialTheme.typography.labelLarge
+        )
     }
 }
 
 /** Card wrapper around the live waveform canvas. */
 @Composable
-private fun WaveformCard(modifier: Modifier = Modifier, isActive: Boolean, samples: FloatArray? = null) {
+private fun WaveformCard(
+    modifier: Modifier = Modifier,
+    isActive: Boolean,
+    samples: FloatArray? = null,
+    sampleRate: Int?,
+    clearTrigger: Boolean
+) {
     ElevatedCard(modifier) {
         Box(Modifier.fillMaxSize()) {
-            HeartSoundWaveform(modifier = Modifier.fillMaxSize().padding(12.dp), samples = samples)
+            LiveWaveformView(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(12.dp),
+                samples = samples,
+                sampleRate = sampleRate,
+                isInteractionEnabled = true, // Enable pinch-to-zoom
+                clearTrigger = clearTrigger
+            )
         }
-    }
-}
-
-/**
- * Lightweight oscilloscope-like strip:
- * - Maintains a small ring buffer of recent samples.
- * - DC-removes and smooths for a stable visual.
- * - Auto-gains to 35% of height.
- */
-@Composable
-fun HeartSoundWaveform(
-    modifier: Modifier,
-    samples: FloatArray?,
-    lineColor: Color = Color(0xFFB388FF)
-) {
-    val visiblePoints = 800
-    val ring = remember { FloatArray(visiblePoints) }
-    var writeIndex by remember { mutableIntStateOf(0) }
-    var filled by remember { mutableIntStateOf(0) }
-    var dcMean by remember { mutableFloatStateOf(0f) }
-
-    LaunchedEffect(samples?.contentHashCode()) {
-        samples?.let { chunk ->
-            val step = max(1, chunk.size / 400)
-            var i = 0
-            while (i < chunk.size) {
-                val v = chunk[i]
-                dcMean += 0.01f * (v - dcMean)
-                val hp = v - dcMean
-                ring[writeIndex] = hp
-                writeIndex = (writeIndex + 1) % visiblePoints
-                filled = min(visiblePoints, filled + 1)
-                i += step
-            }
-        }
-    }
-
-    Canvas(modifier) {
-        val w = size.width
-        val h = size.height
-        val mid = h / 2f
-
-        // Grid
-        val gridColor = lineColor.copy(alpha = 0.06f)
-        val gridSpacing = 40.dp.toPx()
-        var gx = 0f; while (gx <= w) { drawLine(gridColor, Offset(gx, 0f), Offset(gx, h), 1f); gx += gridSpacing }
-        var gy = 0f; while (gy <= h) { drawLine(gridColor, Offset(0f, gy), Offset(w, gy), 1f); gy += gridSpacing }
-
-        if (filled < 8) return@Canvas
-
-        // Extract recent samples from ring
-        val data = FloatArray(filled)
-        val start = (writeIndex - filled + visiblePoints) % visiblePoints
-        if (start + filled <= visiblePoints) {
-            ring.copyInto(data, 0, start, start + filled)
-        } else {
-            val tail = visiblePoints - start
-            ring.copyInto(data, 0, start, visiblePoints)
-            ring.copyInto(data, tail, 0, filled - tail)
-        }
-
-        // Smooth
-        val smooth = FloatArray(data.size)
-        var prev = 0f
-        for (i in data.indices) { prev += 0.35f * (data[i] - prev); smooth[i] = prev }
-
-        // Path
-        val path = Path()
-        path.moveTo(0f, mid)
-        val stepX = w / (smooth.size - 1).coerceAtLeast(1)
-        val gain = (h * 0.35f) / (smooth.maxOrNull()?.takeIf { it > 0f } ?: 1f)
-        for (i in smooth.indices) {
-            val x = i * stepX
-            val y = mid - smooth[i] * gain
-            path.lineTo(x, y)
-        }
-        drawPath(path, color = lineColor.copy(alpha = 0.8f), style = Stroke(width = 2f, cap = StrokeCap.Round))
-
-        // Baseline
-        drawLine(color = lineColor.copy(alpha = 0.25f), start = Offset(0f, mid), end = Offset(w, mid), strokeWidth = 1f)
     }
 }
 
@@ -537,7 +597,9 @@ private class HeartRateEstimator(
     private var filled = 0
     private var fs: Int = 0
 
-    fun reset() { ring = FloatArray(1); writeIndex = 0; filled = 0; fs = 0 }
+    fun reset() {
+        ring = FloatArray(1); writeIndex = 0; filled = 0; fs = 0
+    }
 
     fun append(chunk: FloatArray, sampleRateHz: Int) {
         if (sampleRateHz <= 0) return
@@ -574,7 +636,9 @@ private class HeartRateEstimator(
         var mean = 0f; for (x in buf) mean += x; mean /= n
         for (i in 0 until n) buf[i] -= mean
         var env = 0f
-        for (i in 0 until n) { val r = abs(buf[i]); env += (r - env) * 0.1f; buf[i] = env }
+        for (i in 0 until n) {
+            val r = abs(buf[i]); env += (r - env) * 0.1f; buf[i] = env
+        }
 
         // Downsample to ~200 Hz
         val targetFs = 200
@@ -583,7 +647,9 @@ private class HeartRateEstimator(
         if (m < targetFs) return null
         val ds = FloatArray(m)
         var idx = 0
-        for (i in 0 until m) { ds[i] = buf[idx]; idx += step }
+        for (i in 0 until m) {
+            ds[i] = buf[idx]; idx += step
+        }
 
         // Normalize
         val maxV = ds.maxOrNull() ?: return null
@@ -598,8 +664,12 @@ private class HeartRateEstimator(
         for (lag in minLag..maxLag) {
             var s = 0f
             val limit = m - lag
-            for (i in 0 until limit) { s += ds[i] * ds[i + lag] }
-            if (s > bestScore) { bestScore = s; bestLag = lag }
+            for (i in 0 until limit) {
+                s += ds[i] * ds[i + lag]
+            }
+            if (s > bestScore) {
+                bestScore = s; bestLag = lag
+            }
         }
         if (bestLag <= 0) return null
         return (60f * targetFs / bestLag.toFloat()).roundToInt().coerceIn(40, 180)
@@ -610,7 +680,12 @@ private class HeartRateEstimator(
 @Composable
 private fun RecordButton(recording: Boolean, onClick: () -> Unit, size: Dp = 62.dp) {
     val bg = if (recording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-    Box(Modifier.size(size).clip(CircleShape).background(bg), contentAlignment = Alignment.Center) {
+    Box(
+        Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(bg), contentAlignment = Alignment.Center
+    ) {
         IconButton(onClick = onClick, modifier = Modifier.size(size)) {
             Icon(
                 painter = if (recording) painterResource(R.drawable.stop) else painterResource(R.drawable.fiber_manual_record),
@@ -647,7 +722,12 @@ private fun BlinkingDot(color: Color, size: Dp = 10.dp) {
         animationSpec = infiniteRepeatable(tween(1000, easing = LinearEasing), RepeatMode.Reverse),
         label = "alphaAnim"
     )
-    Box(Modifier.size(size).clip(CircleShape).background(color.copy(alpha = alpha)))
+    Box(
+        Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(color.copy(alpha = alpha))
+    )
 }
 
 @Composable

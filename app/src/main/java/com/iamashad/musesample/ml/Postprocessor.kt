@@ -35,18 +35,6 @@ object Postprocessor {
     }
 
     /**
-     * Backwards-compatible helper: accept a batched segTuple [1][4][64][188]
-     * and dispatch to the single-sample variant. Useful if any old code supplies a batched array.
-     */
-    @Suppress("UNCHECKED_CAST")
-    fun heightCollapseArgmaxFromBatch(segTupleBatch: Array<Array<Array<FloatArray>>>): IntArray {
-        require(segTupleBatch.isNotEmpty()) { "segTupleBatch empty" }
-        // take first batch element
-        val first = segTupleBatch[0]
-        return heightCollapseArgmax(first)
-    }
-
-    /**
      * Fuse window-level label arrays into global timeline via voting.
      *
      * @param totalFrames total mel frames in the clip

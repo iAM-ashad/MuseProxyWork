@@ -18,6 +18,7 @@ import com.iamashad.musesample.audio.lowpassFilter
 import com.iamashad.musesample.audio.readNumChannels
 import com.iamashad.musesample.audio.readSampleRate
 import com.iamashad.musesample.audio.readWavPcm16
+import com.iamashad.musesample.ml.Diagnostics
 import com.iamashad.musesample.ml.runSegmentationOverClip
 import com.iamashad.musesample.model.PcgReportMeta
 import com.iamashad.musesample.print.buildStackedPcgBitmap
@@ -258,7 +259,32 @@ suspend fun generatePcgPdf(
     }
 
     logAndDumpSegments(TAG_PCG_DEBUG, segments)
+    val samplesPerSec = normalized.size.toFloat() / totalDuration
 
+    // 1) summary
+    Diagnostics.logSummary(segments)
+
+    // 2) detect peaks and log match counts
+    val peaks = Diagnostics.detectPeaks(normalized, halfWin = 8, minProminence = 0.25f)
+    val matched = Diagnostics.matchPeaksToSegments(peaks, normalized, samplesPerSec, segments)
+    Log.d(
+        "PCG_DIAG",
+        "Detected peaks=${peaks.size}; matched labels: ${matched.mapValues { it.value.size }}"
+    )
+
+    // 3) beat cycles & stats
+    val cycles = Diagnostics.findBeatCycles(segments)
+    Diagnostics.logBeatStats(cycles)
+
+    // 4) suspicious peaks CSV (copy from log, inspect in Excel)
+    val csv = Diagnostics.findSuspiciousPeaksCsv(
+        normalized,
+        samplesPerSec,
+        segments,
+        halfWin = 8,
+        minProminence = 0.25f
+    )
+    Log.d("PCG_DIAG", "Suspicious peaks CSV:\n$csv")
     val bmp = buildStackedPcgBitmap(
         context = context,
         normalized = normalized,
