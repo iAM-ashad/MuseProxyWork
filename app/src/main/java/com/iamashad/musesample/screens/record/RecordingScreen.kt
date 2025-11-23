@@ -8,15 +8,9 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,22 +26,22 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Divider
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -67,11 +61,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -86,31 +80,33 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-/**
- * End-to-end capture screen:
- * - Checks/requests RECORD_AUDIO permission.
- * - Streams live audio samples from the TAAL wrapper for a visual strip.
- * - Controls start/stop, duration limit, pre-filter and pre-amp options.
- * - Emits a navigation effect with the recorded WAV path when stopping.
- */
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecordingScreen(
     vm: RecordingViewModel,
-    onStopAndSave: (path: String?) -> Unit,
+    onStopAndSave: (filteredPath: String?, rawPath: String?) -> Unit,
     onCancel: () -> Unit
 ) {
     val state by vm.state.collectAsState()
 
-    // Live stream from the SDK wrapper for visualization and HR estimate.
     val context = LocalContext.current
     val app = context.applicationContext as Application
     val wrapper = remember(app) { TaalSdkHolder.get(app) }
     val samples by wrapper.liveSamples.collectAsState()
     val sampleRate by wrapper.sampleRateHz.collectAsState()
 
-    // Permission flow for android.permission.RECORD_AUDIO.
+    // Navigation effect when VM has saved + inserted DB row.
+    LaunchedEffect(vm) {
+        vm.effects.collect { effect ->
+            when (effect) {
+                is RecordingEffect.NavigateAfterSave -> {
+                    onStopAndSave(effect.filteredPath, effect.rawPath)
+                }
+            }
+        }
+    }
+
+    // Permission flow for RECORD_AUDIO.
     val activity = context as? Activity
     val micPermission = AppPermissions.RECORD_AUDIO
     var hasMicPermission by remember {
@@ -144,49 +140,27 @@ fun RecordingScreen(
         }
     }
 
-    // Navigation trigger when VM completes saving.
-    LaunchedEffect(vm) {
-        vm.effects.collect { effect ->
-            when (effect) {
-                is RecordingEffect.NavigateToMetadata -> onStopAndSave(effect.path)
-            }
-        }
-    }
-
     // User-selected options (duration/filter/gain).
     val selectedDuration by vm.selectedDurationSec.collectAsState()
     val selectedFilter by vm.preFilter.collectAsState()
     val selectedAmp by vm.preAmpDb.collectAsState()
 
-    // Lightweight heartbeat estimator for live pill.
-    val bpmEstimator = remember { HeartRateEstimator() }
-    var bpm by remember { mutableStateOf<Int?>(null) }
-    LaunchedEffect(samples, sampleRate, state) {
-        if (state == RecordingState.Recording && samples != null && sampleRate != null) {
-            bpmEstimator.append(samples!!, sampleRate!!)
-            bpm = bpmEstimator.estimateBpm()
-        } else if (state != RecordingState.Recording) {
-            bpmEstimator.reset(); bpm = null
-        }
-    }
-
-    // Bottom sheets & timers.
+    // Bottom sheet for auscultation reference
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var showOptions by remember { mutableStateOf(false) }
     var showReference by remember { mutableStateOf(false) }
+
+    // Timer purely for display; auto-stop is handled in the VM.
     var secondsElapsed by remember(state == RecordingState.Recording) { mutableIntStateOf(0) }
-    LaunchedEffect(state == RecordingState.Recording, selectedDuration) {
+
+    LaunchedEffect(state == RecordingState.Recording) {
         if (state != RecordingState.Recording) {
-            secondsElapsed = 0; return@LaunchedEffect
+            secondsElapsed = 0
+            return@LaunchedEffect
         }
         secondsElapsed = 0
         while (isActive) {
-            delay(1000); secondsElapsed++
-            selectedDuration?.let {
-                if (secondsElapsed >= it) {
-                    vm.toggleRecording(); break
-                }
-            }
+            delay(1000)
+            secondsElapsed++
         }
     }
 
@@ -194,30 +168,48 @@ fun RecordingScreen(
     var clearWaveformTrigger by remember { mutableStateOf(false) }
     LaunchedEffect(state) {
         if (state == RecordingState.Recording) {
-            // This ensures the view is cleared when a new recording starts
             clearWaveformTrigger = true
         }
     }
-    // After the trigger is consumed, reset it
     LaunchedEffect(clearWaveformTrigger) {
         if (clearWaveformTrigger) {
-            delay(100) // Give update block time to run
+            delay(100)
             clearWaveformTrigger = false
         }
+    }
+
+    // Status in top bar
+    val (statusLabel, statusColor) = when (state) {
+        RecordingState.Idle -> "Ready" to Color(0xFF2E7D32)
+        RecordingState.Recording -> "Recording" to MaterialTheme.colorScheme.error
+        RecordingState.Saving -> "Saving…" to MaterialTheme.colorScheme.primary
+        RecordingState.Complete -> "Saved" to MaterialTheme.colorScheme.secondary
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Stethoscope Capture") },
-                actions = {
-                    TextButton(onClick = { showOptions = true }) {
-                        Icon(painterResource(R.drawable.tune), contentDescription = null)
-                        Spacer(Modifier.size(6.dp)); Text("Options")
+                title = {
+                    Column {
+                        Text("TAAL Recorder", style = MaterialTheme.typography.titleLarge)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            StatusDot(color = statusColor, size = 8.dp)
+                            Text(
+                                text = statusLabel,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
+                },
+                actions = {
                     TextButton(onClick = onCancel) {
                         Icon(Icons.Outlined.Close, contentDescription = null)
-                        Spacer(Modifier.size(6.dp)); Text("Cancel")
+                        Spacer(Modifier.width(4.dp))
+                        Text("Cancel")
                     }
                 }
             )
@@ -244,23 +236,15 @@ fun RecordingScreen(
             samples = samples,
             sampleRate = sampleRate,
             clearTrigger = clearWaveformTrigger,
-            bpm = bpm,
             selectedDuration = selectedDuration,
-            onSelectDuration = vm::setRecordingDuration
+            onSelectDuration = vm::setRecordingDuration,
+            selectedFilter = selectedFilter,
+            onSelectFilter = vm::setPreFilter,
+            preAmpDb = selectedAmp,
+            onPreAmpChanged = vm::setPreAmpDb
         )
     }
 
-    if (showOptions) {
-        ModalBottomSheet(onDismissRequest = { showOptions = false }, sheetState = sheetState) {
-            RecordingOptionsSheet(
-                preFilter = selectedFilter,
-                onPreFilterChanged = vm::setPreFilter,
-                preAmpDb = selectedAmp,
-                onPreAmpChanged = vm::setPreAmpDb,
-                onClose = { showOptions = false }
-            )
-        }
-    }
     if (showReference) {
         ModalBottomSheet(onDismissRequest = { showReference = false }, sheetState = sheetState) {
             AuscultationReferenceSheet(onClose = { showReference = false })
@@ -298,7 +282,12 @@ private fun MicPermissionRationaleDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Microphone permission needed") },
-        text = { Text("To record heart sounds, allow microphone access. You can grant it now, or open Settings if you’ve previously denied it.") },
+        text = {
+            Text(
+                "To record heart sounds, allow microphone access. You can grant it now, " +
+                        "or open Settings if you’ve previously denied it."
+            )
+        },
         confirmButton = { TextButton(onClick = onGrant) { Text("Grant") } },
         dismissButton = { TextButton(onClick = onOpenSettings) { Text("Open Settings") } }
     )
@@ -306,9 +295,11 @@ private fun MicPermissionRationaleDialog(
 
 /**
  * Main page body:
- * - Duration chips (when idle),
- * - Status + heartbeat pill (when recording),
- * - Live waveform.
+ * - Filter presets (icon-only).
+ * - Frequency band (when Custom filter selected).
+ * - Duration presets (when idle).
+ * - Live waveform (dominant).
+ * - Pre-amp slider.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -318,32 +309,311 @@ private fun RecordingScreenContent(
     samples: FloatArray?,
     sampleRate: Int?,
     clearTrigger: Boolean,
-    bpm: Int?,
     selectedDuration: Int?,
-    onSelectDuration: (Int?) -> Unit
+    onSelectDuration: (Int?) -> Unit,
+    selectedFilter: PreFilterOption,
+    onSelectFilter: (PreFilterOption) -> Unit,
+    preAmpDb: Int,
+    onPreAmpChanged: (Int) -> Unit
 ) {
     val isRecording = state == RecordingState.Recording
+
+    var lowHz by remember { mutableFloatStateOf(250f) }
+    var highHz by remember { mutableFloatStateOf(12000f) }
 
     Column(
         Modifier
             .padding(paddingTop)
             .fillMaxSize()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        FilterRowCompact(selected = selectedFilter, onSelect = onSelectFilter)
+
+        if (selectedFilter == PreFilterOption.None) {
+            FrequencyBandRow(
+                lowHz = lowHz,
+                highHz = highHz,
+                onChange = { l, h ->
+                    lowHz = l
+                    highHz = h
+                    // Future: pass custom band into VM/RecordConfig when SDK exposes it.
+                }
+            )
+        }
+
         if (!isRecording) {
             DurationPicker(selected = selectedDuration, onSelect = onSelectDuration)
         }
-        StatusCard(state = state, bpm = bpm)
+
         WaveformCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            isActive = isRecording,
             samples = samples,
             sampleRate = sampleRate,
             clearTrigger = clearTrigger
         )
+
+        PreAmpRow(preAmpDb = preAmpDb, onPreAmpChanged = onPreAmpChanged)
+    }
+}
+
+/** Icon-only filter selection row. */
+@Composable
+private fun FilterRowCompact(
+    selected: PreFilterOption,
+    onSelect: (PreFilterOption) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.SpaceEvenly
+    ) {
+        Text(
+            "Filter preset",
+            style = MaterialTheme.typography.titleSmall
+        )
+
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FilterIconChip(
+                selected = selected == PreFilterOption.Heart,
+                iconRes = R.drawable.heart,
+                contentDescription = "Heart",
+                onClick = { onSelect(PreFilterOption.Heart) }
+            )
+            FilterIconChip(
+                selected = selected == PreFilterOption.Lungs,
+                iconRes = R.drawable.lungs,
+                contentDescription = "Lungs",
+                onClick = { onSelect(PreFilterOption.Lungs) }
+            )
+            FilterIconChip(
+                selected = selected == PreFilterOption.Bowel,
+                iconRes = R.drawable.bowel,
+                contentDescription = "Bowel",
+                onClick = { onSelect(PreFilterOption.Bowel) }
+            )
+            FilterIconChip(
+                selected = selected == PreFilterOption.Pregnancy,
+                iconRes = R.drawable.pregnancy,
+                contentDescription = "Maternity",
+                onClick = { onSelect(PreFilterOption.Pregnancy) }
+            )
+            FilterIconChip(
+                selected = selected == PreFilterOption.FullBody,
+                iconRes = R.drawable.full_body,
+                contentDescription = "Full body",
+                onClick = { onSelect(PreFilterOption.FullBody) }
+            )
+            FilterIconChip(
+                selected = selected == PreFilterOption.None,
+                iconRes = R.drawable.custom,
+                contentDescription = "Custom",
+                onClick = { onSelect(PreFilterOption.None) }
+            )
+        }
+    }
+}
+
+/** Tiny circular chip that just shows an icon, with selected state. */
+@Composable
+private fun FilterIconChip(
+    selected: Boolean,
+    iconRes: Int,
+    contentDescription: String?,
+    onClick: () -> Unit
+) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = {
+            Icon(
+                painter = painterResource(iconRes),
+                contentDescription = contentDescription,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+    )
+}
+
+/** Frequency band control with manual numeric input at each end. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FrequencyBandRow(
+    lowHz: Float,
+    highHz: Float,
+    onChange: (Float, Float) -> Unit
+) {
+    val minHz = 20f
+    val maxHz = 24000f
+    val minGapHz = 10f
+
+    var showLowDialog by remember { mutableStateOf(false) }
+    var showHighDialog by remember { mutableStateOf(false) }
+    var lowInput by remember { mutableStateOf(lowHz.toInt().toString()) }
+    var highInput by remember { mutableStateOf(highHz.toInt().toString()) }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            "Frequency band",
+            style = MaterialTheme.typography.titleSmall
+        )
+
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                "${lowHz.toInt()} Hz",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.clickable {
+                    lowInput = lowHz.toInt().toString()
+                    showLowDialog = true
+                }
+            )
+            Text(
+                "${highHz.toInt()} Hz",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.clickable {
+                    highInput = highHz.toInt().toString()
+                    showHighDialog = true
+                }
+            )
+        }
+
+        RangeSlider(
+            value = lowHz..highHz,
+            onValueChange = { range ->
+                val clampedStart = range.start.coerceIn(minHz, maxHz)
+                val clampedEnd = range.endInclusive.coerceIn(minHz, maxHz)
+                if (clampedEnd - clampedStart >= minGapHz) {
+                    onChange(clampedStart, clampedEnd)
+                }
+            },
+            valueRange = minHz..maxHz,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(16.dp)
+        )
+    }
+
+    // Low-end dialog
+    if (showLowDialog) {
+        AlertDialog(
+            onDismissRequest = { showLowDialog = false },
+            title = { Text("Set low frequency") },
+            text = {
+                Column {
+                    Text("Enter a value between ${minHz.toInt()} Hz and ${(highHz - minGapHz).toInt()} Hz.")
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = lowInput,
+                        onValueChange = { lowInput = it },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        label = { Text("Low cutoff (Hz)") }
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val parsed = lowInput.toFloatOrNull()
+                    if (parsed != null) {
+                        val newLow = parsed
+                            .coerceIn(minHz, highHz - minGapHz)
+                        onChange(newLow, highHz)
+                    }
+                    showLowDialog = false
+                }) {
+                    Text("OK")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLowDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // High-end dialog
+    if (showHighDialog) {
+        AlertDialog(
+            onDismissRequest = { showHighDialog = false },
+            title = { Text("Set high frequency") },
+            text = {
+                Column {
+                    Text("Enter a value between ${(lowHz + minGapHz).toInt()} Hz and ${maxHz.toInt()} Hz.")
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = highInput,
+                        onValueChange = { highInput = it },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        label = { Text("High cutoff (Hz)") }
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val parsed = highInput.toFloatOrNull()
+                    if (parsed != null) {
+                        val newHigh = parsed
+                            .coerceIn(lowHz + minGapHz, maxHz)
+                        onChange(lowHz, newHigh)
+                    }
+                    showHighDialog = false
+                }) {
+                    Text("OK")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showHighDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+}
+
+/** Pre-amplification slider row (0–10 dB). */
+@Composable
+private fun PreAmpRow(
+    preAmpDb: Int,
+    onPreAmpChanged: (Int) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Text(
+            "Pre-amplification",
+            style = MaterialTheme.typography.titleSmall
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("$preAmpDb dB", style = MaterialTheme.typography.bodyMedium)
+            Slider(
+                value = preAmpDb.toFloat(),
+                onValueChange = { onPreAmpChanged(it.roundToInt().coerceIn(0, 10)) },
+                valueRange = 0f..10f,
+                steps = 9,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(20.dp)
+                    .padding(bottom = 4.dp)
+            )
+        }
     }
 }
 
@@ -354,14 +624,30 @@ private fun DurationPicker(
     onSelect: (Int?) -> Unit
 ) {
     val options = listOf(15, 30, 45, 60, null)
-    val labels = listOf("15s", "30s", "45s", "60s", "∞")
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-        options.forEachIndexed { index, value ->
-            val isSelected = selected == value
-            FilterChip(
-                selected = isSelected,
-                onClick = { onSelect(value) },
-                label = { Text(labels[index]) })
+    val labels = listOf("15 s", "30 s", "45 s", "60 s", "No limit")
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            "Recording duration",
+            style = MaterialTheme.typography.titleSmall
+        )
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            options.forEachIndexed { index, value ->
+                val isSelected = selected == value
+                FilterChip(
+                    selected = isSelected,
+                    onClick = { onSelect(value) },
+                    label = { Text(labels[index]) }
+                )
+            }
         }
     }
 }
@@ -381,28 +667,34 @@ private fun BottomControls(
     onOpenReference: () -> Unit
 ) {
     val haptics = LocalHapticFeedback.current
-    Surface(tonalElevation = 3.dp) {
+    Surface(tonalElevation = 1.dp) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            FilledTonalButton(
+            IconButton(
                 onClick = onOpenReference,
-                enabled = true,
                 modifier = Modifier.weight(1f)
             ) {
                 Icon(Icons.Outlined.Info, contentDescription = null)
-                Spacer(Modifier.size(8.dp)); Text("Info")
             }
+
             RecordButton(
                 recording = isRecording,
-                onClick = { onToggle(); haptics.performHapticFeedback(HapticFeedbackType.LongPress) })
+                onClick = {
+                    onToggle()
+                    haptics.performHapticFeedback(
+                        androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress
+                    )
+                }
+            )
+
             val displaySec =
                 totalDuration?.let { (it - secondsElapsed).coerceAtLeast(0) } ?: secondsElapsed
-            val min = displaySec / 60;
+            val min = displaySec / 60
             val sec = displaySec % 60
             Text(
                 text = "%02d:%02d".format(min, sec),
@@ -431,7 +723,7 @@ private fun AuscultationReferenceSheet(onClose: () -> Unit) {
             Text("Anterior auscultation points", style = MaterialTheme.typography.titleMedium)
             TextButton(onClick = onClose) { Text("Close") }
         }
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(8.dp))
         Text(
             "Use these landmarks for Aortic, Pulmonic, Tricuspid and Mitral areas.",
             style = MaterialTheme.typography.bodyMedium,
@@ -442,43 +734,13 @@ private fun AuscultationReferenceSheet(onClose: () -> Unit) {
             imageRes = R.drawable.auscultation,
             contentDescription = "Anterior auscultation points reference"
         )
-        Spacer(Modifier.height(12.dp))
-        Divider()
-        Spacer(Modifier.height(6.dp))
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            LegendRow(
-                color = MaterialTheme.colorScheme.primary,
-                label = "Aortic — 2nd ICS, Right sternal border"
-            )
-            LegendRow(
-                color = MaterialTheme.colorScheme.secondary,
-                label = "Pulmonic — 2nd ICS, Left sternal border"
-            )
-            LegendRow(
-                color = MaterialTheme.colorScheme.tertiary,
-                label = "Tricuspid — 4th–5th ICS, Left sternal border"
-            )
-            LegendRow(
-                color = MaterialTheme.colorScheme.error,
-                label = "Mitral (Apex) — 5th ICS, Mid-clavicular line"
-            )
-        }
         Spacer(Modifier.height(16.dp))
-        Button(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("Got it") }
-        Spacer(Modifier.height(8.dp))
-    }
-}
-
-@Composable
-private fun LegendRow(color: Color, label: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            Modifier
-                .size(10.dp)
-                .clip(CircleShape)
-                .background(color)
-        )
-        Spacer(Modifier.width(8.dp)); Text(label, style = MaterialTheme.typography.bodySmall)
+        TextButton(
+            onClick = onClose,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Got it")
+        }
     }
 }
 
@@ -488,19 +750,22 @@ private fun ZoomableImageCard(imageRes: Int, contentDescription: String?) {
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
+
     ElevatedCard(Modifier.fillMaxWidth()) {
         Box(
             Modifier
                 .fillMaxWidth()
-                .height(280.dp)
-                .background(MaterialTheme.colorScheme.surface)
+                .height(260.dp)
+                .background(Color.White)
                 .pointerInput(Unit) {
                     detectTransformGestures { _, pan, zoom, _ ->
                         scale = (scale * zoom).coerceIn(1f, 4f)
                         if (scale > 1f) {
-                            offsetX += pan.x; offsetY += pan.y
+                            offsetX += pan.x
+                            offsetY += pan.y
                         } else {
-                            offsetX = 0f; offsetY = 0f
+                            offsetX = 0f
+                            offsetY = 0f
                         }
                     }
                 }
@@ -511,83 +776,63 @@ private fun ZoomableImageCard(imageRes: Int, contentDescription: String?) {
                 modifier = Modifier
                     .align(Alignment.Center)
                     .graphicsLayer {
-                        translationX = offsetX; translationY = offsetY; scaleX = scale; scaleY =
-                        scale
+                        translationX = offsetX
+                        translationY = offsetY
+                        scaleX = scale
+                        scaleY = scale
                     }
             )
         }
     }
 }
 
-/** Colored status chip with optional live BPM pill while recording. */
+/** Static status dot (used in top bar). */
 @Composable
-private fun StatusCard(state: RecordingState, bpm: Int?) {
-    val (label, color) = when (state) {
-        RecordingState.Idle -> "Ready" to Color(0xFF2E7D32)
-        RecordingState.Recording -> "Recording…" to MaterialTheme.colorScheme.error
-        RecordingState.Saving -> "Saving…" to MaterialTheme.colorScheme.primary
-        RecordingState.Complete -> "Saved" to MaterialTheme.colorScheme.secondary
-    }
-    val dotColor by animateColorAsState(color, label = "statusColor")
-    ElevatedCard(Modifier.fillMaxWidth()) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            BlinkingDot(color = dotColor)
-            Spacer(Modifier.size(10.dp))
-            Text(label, style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.weight(1f))
-            if (state == RecordingState.Recording) {
-                HeartRatePill(bpm = bpm)
-            }
-        }
-    }
-}
-
-/** Small rounded pill showing the current heart rate estimate. */
-@Composable
-private fun HeartRatePill(bpm: Int?) {
-    Surface(
-        color = MaterialTheme.colorScheme.primaryContainer,
-        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-        shape = CircleShape
-    ) {
-        Text(
-            text = if (bpm != null) "$bpm bpm" else "-- bpm",
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-            style = MaterialTheme.typography.labelLarge
-        )
-    }
+private fun StatusDot(color: Color, size: Dp = 10.dp) {
+    Box(
+        Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(color)
+    )
 }
 
 /** Card wrapper around the live waveform canvas. */
 @Composable
 private fun WaveformCard(
     modifier: Modifier = Modifier,
-    isActive: Boolean,
     samples: FloatArray? = null,
     sampleRate: Int?,
     clearTrigger: Boolean
 ) {
     ElevatedCard(modifier) {
-        Box(Modifier.fillMaxSize()) {
-            LiveWaveformView(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(12.dp),
-                samples = samples,
-                sampleRate = sampleRate,
-                isInteractionEnabled = true, // Enable pinch-to-zoom
-                clearTrigger = clearTrigger
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(12.dp)
+        ) {
+            Text(
+                text = "Live waveform",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Spacer(Modifier.height(8.dp))
+            Box(Modifier.fillMaxSize()) {
+                LiveWaveformView(
+                    modifier = Modifier.fillMaxSize(),
+                    samples = samples,
+                    sampleRate = sampleRate,
+                    isInteractionEnabled = true,
+                    clearTrigger = clearTrigger
+                )
+            }
         }
     }
 }
 
 /**
- * Small rolling estimator for HR (bpm):
- * - Rectifies + smooths to envelope,
- * - Downsamples to ~200 Hz,
- * - Autocorrelates in 40–180 bpm range and picks max.
- * Returns null until it has enough samples.
+ * Small rolling estimator for HR (bpm).
+ * (Kept for potential reuse; currently not shown in UI).
  */
 private class HeartRateEstimator(
     private val windowSec: Float = 8f
@@ -620,7 +865,6 @@ private class HeartRateEstimator(
     fun estimateBpm(): Int? {
         if (fs <= 0 || filled < fs / 2) return null
 
-        // Copy window
         val n = filled
         val buf = FloatArray(n)
         val start = (writeIndex - filled + ring.size) % ring.size
@@ -632,7 +876,6 @@ private class HeartRateEstimator(
             ring.copyInto(buf, tail, 0, n - tail)
         }
 
-        // DC remove + envelope
         var mean = 0f; for (x in buf) mean += x; mean /= n
         for (i in 0 until n) buf[i] -= mean
         var env = 0f
@@ -640,7 +883,6 @@ private class HeartRateEstimator(
             val r = abs(buf[i]); env += (r - env) * 0.1f; buf[i] = env
         }
 
-        // Downsample to ~200 Hz
         val targetFs = 200
         val step = max(1, fs / targetFs)
         val m = n / step
@@ -651,12 +893,10 @@ private class HeartRateEstimator(
             ds[i] = buf[idx]; idx += step
         }
 
-        // Normalize
         val maxV = ds.maxOrNull() ?: return null
         if (maxV <= 1e-6f) return null
         for (i in ds.indices) ds[i] /= maxV
 
-        // Autocorrelation in 40..180 bpm
         val minLag = (targetFs * 60f / 180f).toInt().coerceAtLeast(1)
         val maxLag = (targetFs * 60f / 40f).toInt().coerceAtMost(m - 1)
         var bestLag = -1
@@ -678,17 +918,25 @@ private class HeartRateEstimator(
 
 /** Big circular toggle button with a record/stop icon. */
 @Composable
-private fun RecordButton(recording: Boolean, onClick: () -> Unit, size: Dp = 62.dp) {
+private fun RecordButton(
+    recording: Boolean,
+    onClick: () -> Unit,
+    size: Dp = 64.dp
+) {
     val bg = if (recording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
     Box(
         Modifier
             .size(size)
             .clip(CircleShape)
-            .background(bg), contentAlignment = Alignment.Center
+            .background(bg),
+        contentAlignment = Alignment.Center
     ) {
         IconButton(onClick = onClick, modifier = Modifier.size(size)) {
             Icon(
-                painter = if (recording) painterResource(R.drawable.stop) else painterResource(R.drawable.fiber_manual_record),
+                painter = if (recording)
+                    painterResource(R.drawable.stop)
+                else
+                    painterResource(R.drawable.fiber_manual_record),
                 contentDescription = if (recording) "Stop recording" else "Start recording",
                 tint = Color.White
             )
@@ -704,84 +952,14 @@ private fun SavingDialog() {
         confirmButton = {},
         title = { Text("Saving recording…") },
         text = {
-            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                CircularProgressIndicator()
+            Column(
+                Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                androidx.compose.material3.CircularProgressIndicator()
                 Spacer(Modifier.height(12.dp))
                 Text("Please keep the device connected.")
             }
         }
     )
-}
-
-/** Small animated dot used in the status card. */
-@Composable
-private fun BlinkingDot(color: Color, size: Dp = 10.dp) {
-    val inf = rememberInfiniteTransition(label = "blink")
-    val alpha by inf.animateFloat(
-        0.3f, 1f,
-        animationSpec = infiniteRepeatable(tween(1000, easing = LinearEasing), RepeatMode.Reverse),
-        label = "alphaAnim"
-    )
-    Box(
-        Modifier
-            .size(size)
-            .clip(CircleShape)
-            .background(color.copy(alpha = alpha))
-    )
-}
-
-@Composable
-private fun RecordingOptionsSheet(
-    preFilter: PreFilterOption,
-    onPreFilterChanged: (PreFilterOption) -> Unit,
-    preAmpDb: Int,
-    onPreAmpChanged: (Int) -> Unit,
-    onClose: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Text("Recording Options", style = MaterialTheme.typography.titleLarge)
-
-        Text("Pre-filter", style = MaterialTheme.typography.titleMedium)
-        val filters = listOf(
-            PreFilterOption.None, PreFilterOption.Heart, PreFilterOption.Lungs,
-            PreFilterOption.Bowel, PreFilterOption.Pregnancy, PreFilterOption.FullBody
-        )
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            filters.chunked(3).forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    row.forEach { opt ->
-                        FilterChip(
-                            selected = preFilter == opt,
-                            onClick = { onPreFilterChanged(opt) },
-                            label = { Text(opt.label) }
-                        )
-                    }
-                }
-            }
-        }
-
-        Text("Pre-amplification (0–10 dB)", style = MaterialTheme.typography.titleMedium)
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("$preAmpDb dB", style = MaterialTheme.typography.titleLarge)
-            androidx.compose.material3.Slider(
-                value = preAmpDb.toFloat(),
-                onValueChange = { onPreAmpChanged(it.roundToInt().coerceIn(0, 10)) },
-                valueRange = 0f..10f,
-                steps = 9
-            )
-        }
-
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(onClick = onClose) { Text("Done") }
-        }
-    }
 }

@@ -1,4 +1,3 @@
-import com.android.build.api.dsl.Packaging
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -20,18 +19,6 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    }// pickFirsts.add("**/*.onnx")
-
-    // pickFirsts.add("**/arm64-v8a/libonnxruntime.so")
-    fun Packaging.() {
-        jniLibs {
-            pickFirsts.add("**/libonnxruntime.so")
-            // pickFirsts.add("**/arm64-v8a/libonnxruntime.so")
-        }
-        resources {
-            pickFirsts.add("assets/ml/pcg_segmentation.onnx")
-            // pickFirsts.add("**/*.onnx")
-        }
     }
 
     buildTypes {
@@ -66,6 +53,9 @@ dependencies {
     //ort mobile
     implementation("com.microsoft.onnxruntime:onnxruntime-android:latest.release")
 
+    //material icons
+    implementation("androidx.compose.material:material-icons-core:1.7.8")
+
     //room
     implementation("androidx.room:room-runtime:2.8.2")
     implementation("androidx.room:room-ktx:2.8.2")
@@ -83,12 +73,7 @@ dependencies {
 
     //webkit
     implementation("androidx.webkit:webkit:1.14.0")
-    //lottie
-    implementation("com.airbnb.android:lottie-compose:6.6.9")
-    //icon pack
-    implementation("androidx.compose.material:material-icons-core:1.7.8")
-    //mpandroidchart
-    implementation("com.github.PhilJay:MPAndroidChart:v3.1.0")
+
     //coroutines
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.activity:activity-ktx:1.11.0")

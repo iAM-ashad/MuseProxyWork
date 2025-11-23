@@ -13,16 +13,7 @@ import kotlin.coroutines.resumeWithException
 /**
  * Print a WebView’s current content into a PDF file descriptor.
  *
- * Why this package name?
- * - Placing this file in `package android.print` allows access to nested framework
- *   callback classes' constructors (needed by the print pipeline).
- *
- * Usage:
- *   val pfd = ParcelFileDescriptor.open(outFile, MODE_CREATE or MODE_TRUNCATE or MODE_READ_WRITE)
- *   writeWebViewToPdf(webView, pfd)
- *
- * Threading:
- * - Must be called on the main thread (WebView/printing are UI-bound).
+ * Placed in `package android.print` to access nested framework callback constructors.
  */
 suspend fun writeWebViewToPdf(
     webView: WebView,
@@ -40,13 +31,21 @@ suspend fun writeWebViewToPdf(
         override fun onLayoutFinished(info: PrintDocumentInfo?, changed: Boolean) {
             val writeCallback = object : PrintDocumentAdapter.WriteResultCallback() {
                 override fun onWriteFinished(pageRanges: Array<out PageRange>?) {
-                    try { outputPfd.close() } catch (_: Throwable) { }
+                    try {
+                        outputPfd.close()
+                    } catch (_: Throwable) {
+                    }
                     cont.resume(Unit)
                 }
 
                 override fun onWriteFailed(error: CharSequence?) {
-                    try { outputPfd.close() } catch (_: Throwable) { }
-                    cont.resumeWithException(IllegalStateException(error?.toString() ?: "Write failed"))
+                    try {
+                        outputPfd.close()
+                    } catch (_: Throwable) {
+                    }
+                    cont.resumeWithException(
+                        IllegalStateException(error?.toString() ?: "Write failed")
+                    )
                 }
             }
 
@@ -59,7 +58,9 @@ suspend fun writeWebViewToPdf(
         }
 
         override fun onLayoutFailed(error: CharSequence?) {
-            cont.resumeWithException(IllegalStateException(error?.toString() ?: "Layout failed"))
+            cont.resumeWithException(
+                IllegalStateException(error?.toString() ?: "Layout failed")
+            )
         }
     }
 

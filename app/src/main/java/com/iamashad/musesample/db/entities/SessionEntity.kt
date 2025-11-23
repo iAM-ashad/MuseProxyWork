@@ -20,7 +20,13 @@ data class SessionEntity(
     val notes: String,
     val posture: String,
     val position: String,
+
+    // This path now points to the SDK-FILTERED file
     val wavPath: String,
+
+    // This new column points to the raw file for the ML model
+    val rawWavPath: String,
+
     val pdfPath: String?,
 
     // Store plain value (UI renders as “S.E.X.: …”)

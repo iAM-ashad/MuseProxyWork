@@ -117,7 +117,7 @@ object Preprocessor {
     private fun Float.format(d: Int) = "%.${d}f".format(this)
 
     // Linear resample from srIn -> srOut
-    private fun resampleLinear(input: FloatArray, srIn: Int, srOut: Int): FloatArray {
+    fun resampleLinear(input: FloatArray, srIn: Int, srOut: Int): FloatArray {
         if (srIn == srOut) return input.copyOf()
         val lenIn = input.size
         val duration = lenIn.toDouble() / srIn
@@ -136,7 +136,7 @@ object Preprocessor {
     }
 
     // Simple biquad bandpass filter cascade (2nd-order sections)
-    private fun bandpassFilter(
+    fun bandpassFilter(
         input: FloatArray,
         sr: Int,
         lowHz: Double,

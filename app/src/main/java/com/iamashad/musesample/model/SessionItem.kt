@@ -36,5 +36,6 @@ data class Session(
     val posture: String = "Standing",
     val position: String = "Mitral",
     val wavPath: String,
+    val rawWavPath: String,
     val pdfPath: String? = null
 )

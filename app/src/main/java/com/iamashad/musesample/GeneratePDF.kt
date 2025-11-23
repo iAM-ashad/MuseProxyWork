@@ -12,18 +12,16 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
-import com.iamashad.musesample.audio.bandpassFilter
 import com.iamashad.musesample.audio.downsampleWaveform
-import com.iamashad.musesample.audio.lowpassFilter
-import com.iamashad.musesample.audio.readNumChannels
-import com.iamashad.musesample.audio.readSampleRate
-import com.iamashad.musesample.audio.readWavPcm16
+import com.iamashad.musesample.audio.readWavMono16
 import com.iamashad.musesample.ml.Diagnostics
 import com.iamashad.musesample.ml.runSegmentationOverClip
 import com.iamashad.musesample.model.PcgReportMeta
+import com.iamashad.musesample.model.WavData
 import com.iamashad.musesample.print.buildStackedPcgBitmap
 import com.iamashad.musesample.utils.TAG_PCG_DEBUG
 import com.iamashad.musesample.utils.logAndDumpSegments
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -41,7 +39,7 @@ fun bitmapToBase64Png(bmp: Bitmap, quality: Int = 100): String {
     return Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP)
 }
 
-/** Build HTML for the report (unchanged) */
+/** Build HTML for the report */
 fun buildHtml(meta: PcgReportMeta, base64Png: String): String = """
 <!doctype html>
 <html>
@@ -65,16 +63,78 @@ fun buildHtml(meta: PcgReportMeta, base64Png: String): String = """
       .two-col .card { flex:1; }
       .footer { margin-top:28px; font-size:20px; text-align:center; color:#666; }
       .page-break { page-break-before:always; }
-      .wave-wrapper { display:flex; justify-content:center; align-items:flex-start; min-height:245mm; }
-      .wave-card { border:2px solid #b0c4de; border-radius:12px; padding:12px; background:#fff; max-width:300mm; width:100%; margin:0 auto; box-shadow:0 2mm 4mm rgba(0,0,0,0.10); }
-      .wave-title { font-size:24px; font-weight:700; text-align:center; color:#0b4da2; margin:8px 0 12px; }
-      .wave img { display:block; margin:0 auto; width:100%; height:auto; }
+
+      /* Waveform page */
+      .wave-wrapper {
+        display:flex;
+        justify-content:center;
+        align-items:flex-start;
+        padding-top:4mm;
+        padding-bottom:4mm;
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+      .wave-card {
+        border:2px solid #b0c4de;
+        border-radius:12px;
+        padding:12px;
+        background:#fff;
+        max-width:185mm;
+        width:100%;
+        margin:0 auto;
+        box-shadow:0 2mm 4mm rgba(0,0,0,0.10);
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+      .wave-title {
+        font-size:24px;
+        font-weight:700;
+        text-align:center;
+        color:#0b4da2;
+        margin:4px 0 10px;
+      }
+      .wave img {
+        display:block;
+        margin:0 auto;
+        width:100%;
+        height:auto;
+        max-height:250mm;
+        object-fit:contain;
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+
+      /* Legend */
+      .legend {
+        display:flex;
+        justify-content:center;
+        align-items:center;
+        gap:24px;
+        margin:8px 0 12px;
+        font-size:18px;
+        font-weight:600;
+        color:#0b4da2;
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+      .legend-item { display:flex; align-items:center; gap:8px; }
+      .legend-box {
+        width:18px;
+        height:18px;
+        border:1.2px solid #0b4da2;
+      }
+      .s1-box { background-color: rgba(220, 38, 38, 0.7); }
+      .systole-box { background-color: rgba(34, 197, 94, 0.6); }
+      .s2-box { background-color: rgba(37, 99, 235, 0.7); }
+      .diastole-box { background-color: rgba(255, 140, 0, 0.5); }
     </style>
   </head>
   <body>
     <div class="page">
       <div class="header">
-        <div class="logo"><img src="https://appassets.androidplatform.net/res/drawable/muse_logo.png" alt="Logo"/></div>
+        <div class="logo">
+          <img src="https://appassets.androidplatform.net/res/drawable/muse_logo.png" alt="Logo"/>
+        </div>
         <div class="title-block">
           <div class="title">PCG Session Report</div>
           <div class="meta">Generated: ${
@@ -88,7 +148,8 @@ fun buildHtml(meta: PcgReportMeta, base64Png: String): String = """
         <div class="card">
           <h3>Patient Information</h3>
           <table>
-            <tr><th>Name</th><td>${meta.patientName} (ID: ${meta.patientId})</td></tr>
+            <tr><th>Name</th><td>${meta.patientName}</td></tr>
+            <tr><th>Patient-ID</th><td>${meta.patientId}</td></tr>
             <tr><th>Age</th><td>${meta.age.ifBlank { "—" }}</td></tr>
             <tr><th>Sex</th><td>${meta.sex.ifBlank { "—" }}</td></tr>
             <tr><th>Height</th><td>${meta.height.ifBlank { "—" }}</td></tr>
@@ -109,14 +170,34 @@ fun buildHtml(meta: PcgReportMeta, base64Png: String): String = """
         </div>
       </div>
 
-      <div class="footer">© ${java.time.Year.now()} Muse Diagnostics — Phonocardiogram Analysis Report.</div>
+      <div class="footer">
+        © ${java.time.Year.now()} Muse Diagnostics — Phonocardiogram Analysis Report.
+      </div>
     </div>
 
     <div class="page-break">
       <div class="wave-wrapper">
         <div class="wave-card">
           <div class="wave-title">PHONOCARDIOGRAM</div>
-          <img alt="PCG Waveform" src="data:image/png;base64,$base64Png"/>
+
+          <div class="legend">
+            <div class="legend-item">
+              <div class="legend-box s1-box"></div><span>S1</span>
+            </div>
+            <div class="legend-item">
+              <div class="legend-box systole-box"></div><span>Systole</span>
+            </div>
+            <div class="legend-item">
+              <div class="legend-box s2-box"></div><span>S2</span>
+            </div>
+            <div class="legend-item">
+              <div class="legend-box diastole-box"></div><span>Diastole</span>
+            </div>
+          </div>
+
+          <div class="wave">
+            <img alt="PCG Waveform" src="data:image/png;base64,$base64Png"/>
+          </div>
         </div>
       </div>
     </div>
@@ -124,7 +205,6 @@ fun buildHtml(meta: PcgReportMeta, base64Png: String): String = """
 </html>
 """.trimIndent()
 
-/** Convert HTML -> PDF via WebView print */
 suspend fun htmlToPdf(
     context: Context,
     html: String,
@@ -135,6 +215,13 @@ suspend fun htmlToPdf(
         .addPathHandler("/res/", WebViewAssetLoader.ResourcesPathHandler(context))
         .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(context))
         .build()
+
+    val parent = outFile.parentFile ?: context.filesDir
+    if (!parent.exists()) parent.mkdirs()
+    val tempFile = File(
+        parent,
+        outFile.nameWithoutExtension + "_tmp_" + System.currentTimeMillis() + ".pdf"
+    )
 
     try {
         withTimeout(20_000L) {
@@ -148,16 +235,31 @@ suspend fun htmlToPdf(
 
                     override fun onPageFinished(view: WebView, url: String?) {
                         try {
-                            outFile.parentFile?.let { if (!it.exists()) it.mkdirs() }
-                            if (outFile.exists()) outFile.delete()
                             val pfd = ParcelFileDescriptor.open(
-                                outFile,
-                                ParcelFileDescriptor.MODE_READ_WRITE or ParcelFileDescriptor.MODE_CREATE or ParcelFileDescriptor.MODE_TRUNCATE
+                                tempFile,
+                                ParcelFileDescriptor.MODE_READ_WRITE or
+                                        ParcelFileDescriptor.MODE_CREATE or
+                                        ParcelFileDescriptor.MODE_TRUNCATE
                             )
-                            kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
+                            CoroutineScope(Dispatchers.Main).launch {
                                 try {
                                     android.print.writeWebViewToPdf(webView, pfd)
-                                    if (!cont.isCompleted) cont.resume(outFile)
+
+                                    if (outFile.exists() && outFile != tempFile) {
+                                        outFile.delete()
+                                    }
+
+                                    val finalFile = if (tempFile.renameTo(outFile)) {
+                                        outFile
+                                    } else {
+                                        Log.w(
+                                            TAG_PCG_DEBUG,
+                                            "Failed to rename temp PDF to target; using temp path."
+                                        )
+                                        tempFile
+                                    }
+
+                                    if (!cont.isCompleted) cont.resume(finalFile)
                                 } catch (t: Throwable) {
                                     if (!cont.isCompleted) cont.resumeWithException(t)
                                 }
@@ -171,10 +273,15 @@ suspend fun htmlToPdf(
                         view: WebView,
                         detail: android.webkit.RenderProcessGoneDetail
                     ): Boolean {
-                        if (!cont.isCompleted) cont.resumeWithException(IllegalStateException("WebView renderer died"))
+                        if (!cont.isCompleted) {
+                            cont.resumeWithException(
+                                IllegalStateException("WebView renderer died")
+                            )
+                        }
                         return true
                     }
                 }
+
                 webView.loadDataWithBaseURL(
                     "https://appassets.androidplatform.net/",
                     html,
@@ -186,6 +293,9 @@ suspend fun htmlToPdf(
         }
     } finally {
         webView.destroy()
+        if (tempFile.exists() && tempFile != outFile && outFile.length() == 0L) {
+            tempFile.delete()
+        }
     }
 }
 
@@ -195,59 +305,68 @@ private fun defaultPdfLocation(context: Context): File {
 }
 
 /**
- * High-level entry: reads WAV, applies lowpass+bandpass, runs segmentation, builds PDF.
- *
- * Notes:
- * - We apply a lowpass (default 200 Hz) BEFORE both the segmentation preproc and visual pipeline
- *   so plotted waveform and model input are more aligned.
+ * High-level entry:
+ *  - Visual PCG uses the SDK-filtered WAV (what the clinician hears).
+ *  - ML segmentation uses the raw WAV (if available) to match training.
  */
 suspend fun generatePcgPdf(
     context: Context,
-    wavPath: String,
+    filteredWavPath: String,
+    rawWavPath: String?,
     meta: PcgReportMeta,
-    useLowpass: Boolean = true,
-    lowpassCutoffHz: Float = 200f,
-    lowpassCascade: Int = 1
+    outFile: File? = null
 ): File {
     val t0 = System.currentTimeMillis()
     Log.d(TAG_PCG_DEBUG, "=== Report generation started ===")
-    Log.d(TAG_PCG_DEBUG, "WAV Path: $wavPath")
+    Log.d(TAG_PCG_DEBUG, "Filtered WAV (visual) path: $filteredWavPath")
+    Log.d(TAG_PCG_DEBUG, "Raw WAV (ML) path: $rawWavPath")
 
-    val file = File(wavPath)
-    require(file.exists()) { "WAV file does not exist at path: $wavPath" }
+    // 1) Load WAVs
+    val filtered: WavData = withContext(Dispatchers.IO) {
+        readWavMono16(filteredWavPath)
+    }
 
-    val sampleRate = readSampleRate(file)
-    val numChannels = readNumChannels(file)
-    Log.d(TAG_PCG_DEBUG, "SampleRate=$sampleRate Hz, Channels=$numChannels")
+    val raw: WavData = withContext(Dispatchers.IO) {
+        try {
+            if (!rawWavPath.isNullOrBlank() && rawWavPath != filteredWavPath) {
+                readWavMono16(rawWavPath)
+            } else {
+                filtered
+            }
+        } catch (t: Throwable) {
+            Log.w(
+                TAG_PCG_DEBUG,
+                "Failed to load raw WAV ($rawWavPath), falling back to filtered. Reason=${t.message}"
+            )
+            filtered
+        }
+    }
 
-    // Read normalized PCM (-1..1)
-    val pcm = readWavPcm16(file, numChannels)
-    val totalDuration = pcm.size.toFloat() / sampleRate.toFloat()
-    Log.d(TAG_PCG_DEBUG, "Audio duration: $totalDuration s, pcmSamples=${pcm.size}")
+    require(filtered.samples.isNotEmpty()) {
+        "Filtered WAV decode produced empty samples: $filteredWavPath"
+    }
+    require(raw.samples.isNotEmpty()) {
+        "Raw WAV decode produced empty samples."
+    }
 
-    // Optionally lowpass first (remove >200Hz)
-    val pcmLow = if (useLowpass) lowpassFilter(
-        pcm,
-        sampleRate,
-        lowpassCutoffHz,
-        cascade = lowpassCascade
-    ) else pcm
+    val totalDuration = raw.samples.size.toFloat() / raw.sampleRate.toFloat()
+    Log.d(
+        TAG_PCG_DEBUG,
+        "Filtered: SR=${filtered.sampleRate}Hz, n=${filtered.samples.size}; " +
+                "Raw: SR=${raw.sampleRate}Hz, n=${raw.samples.size}; duration=$totalDuration s"
+    )
 
-    // Apply band-pass for visual/model pipelines (20..500 for visuals; we can restrict to 20..200 if desired)
-    // For visuals keep bandpass at default 20..500 but since we lowpassed above it effectively becomes 20..200
-    val filteredForVisual = bandpassFilter(pcmLow, sampleRate, lowHz = 20f, highHz = 500f)
-    val normalized = downsampleWaveform(filteredForVisual, 3200)
+    // 2) Visual pipeline (filtered → compressed, resampled waveform)
+    val normalized = downsampleWaveform(filtered.samples, targetCount = 3200)
     Log.d(TAG_PCG_DEBUG, "Downsampled waveform: ${normalized.size} pts")
 
-    // Run segmentation on a separate copy (use same lowpass + filtered chain)
-    val filteredForModel = bandpassFilter(pcmLow, sampleRate, lowHz = 20f, highHz = 500f)
-
-    val datasetFlag = 0L // default; set to 1L if your clip is Physionet2022-like
+    // 3) ML segmentation (raw)
+    val datasetFlag = 0L
     val segments = try {
         runSegmentationOverClip(
             context = context,
-            pcm = filteredForModel,
-            originalSampleRate = sampleRate,
+            pcm = raw.samples,
+            originalSampleRate = raw.sampleRate,
             datasetFlag = datasetFlag,
             metaFromReport = meta,
             medianKernel = 5,
@@ -255,16 +374,16 @@ suspend fun generatePcgPdf(
         )
     } catch (t: Throwable) {
         Log.w(TAG_PCG_DEBUG, "Segmentation failed: ${t.message}")
+        t.printStackTrace()
         emptyList()
     }
 
+    // 4) Diagnostics + bitmap
     logAndDumpSegments(TAG_PCG_DEBUG, segments)
     val samplesPerSec = normalized.size.toFloat() / totalDuration
 
-    // 1) summary
     Diagnostics.logSummary(segments)
 
-    // 2) detect peaks and log match counts
     val peaks = Diagnostics.detectPeaks(normalized, halfWin = 8, minProminence = 0.25f)
     val matched = Diagnostics.matchPeaksToSegments(peaks, normalized, samplesPerSec, segments)
     Log.d(
@@ -272,11 +391,9 @@ suspend fun generatePcgPdf(
         "Detected peaks=${peaks.size}; matched labels: ${matched.mapValues { it.value.size }}"
     )
 
-    // 3) beat cycles & stats
     val cycles = Diagnostics.findBeatCycles(segments)
     Diagnostics.logBeatStats(cycles)
 
-    // 4) suspicious peaks CSV (copy from log, inspect in Excel)
     val csv = Diagnostics.findSuspiciousPeaksCsv(
         normalized,
         samplesPerSec,
@@ -285,21 +402,27 @@ suspend fun generatePcgPdf(
         minProminence = 0.25f
     )
     Log.d("PCG_DIAG", "Suspicious peaks CSV:\n$csv")
+
     val bmp = buildStackedPcgBitmap(
         context = context,
         normalized = normalized,
         secondsTotal = totalDuration,
-        segmentSec = 5f,
+        segmentSec = 6f,
         widthPx = 2400,
-        heightPx = 1200,
-        rowSpacingPx = 40,
+        heightPx = 3200,
+        rowSpacingPx = 50,
         segments = segments
     )
 
     val base64 = bitmapToBase64Png(bmp)
     bmp.recycle()
+
     val html = buildHtml(meta, base64)
-    val pdf = htmlToPdf(context, html)
+    val pdf = htmlToPdf(
+        context = context,
+        html = html,
+        outFile = outFile ?: defaultPdfLocation(context)
+    )
 
     Log.d(TAG_PCG_DEBUG, "PDF generated successfully in ${System.currentTimeMillis() - t0} ms")
     return pdf

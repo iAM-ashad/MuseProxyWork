@@ -6,7 +6,6 @@ import androidx.core.net.toUri
 import com.iamashad.musesample.db.DbProvider
 import com.iamashad.musesample.db.entities.SessionEntity
 import com.iamashad.musesample.model.Session
-import com.iamashad.musesample.repository.SessionRepository.init
 import com.iamashad.musesample.utils.TAG_MUSE_DB
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -19,15 +18,6 @@ import java.time.format.DateTimeFormatter
 
 /**
  * Process-wide repository for persisted PCG sessions.
- *
- * Responsibilities:
- * - Provide a Flow of domain [Session] objects for the UI.
- * - Write-through helpers to insert/update/delete sessions.
- * - Hide Room/SQLCipher details behind a simple API.
- *
- * Lifecycle:
- * - Call [init] once from [android.app.Application] (see `MuseSampleApp.kt`).
- * - All DB work is performed on Dispatchers.IO via a private scope.
  */
 object SessionRepository {
 
@@ -41,7 +31,6 @@ object SessionRepository {
 
     /**
      * Live list of sessions, newest-first, mapped from Room entities to domain models.
-     * Collected by the Session History screen.
      */
     val sessions: Flow<List<Session>> by lazy {
         DbProvider.get(appContext).sessionDao().observeAll().map { rows ->
@@ -49,11 +38,7 @@ object SessionRepository {
         }
     }
 
-    /**
-     * Insert or replace a session row.
-     *
-     * Use when saving from the Metadata screen after a recording completes.
-     */
+    /** Insert or replace a session row. */
     fun add(s: Session) {
         io.launch {
             try {
@@ -68,12 +53,7 @@ object SessionRepository {
         }
     }
 
-    /**
-     * Attach or update the generated PDF path for a session.
-     *
-     * @param id The session primary key.
-     * @param pdfPath Absolute path to the generated report (or null to clear).
-     */
+    /** Attach or update the generated PDF path for a session. */
     fun updatePdf(id: Long, pdfPath: String) {
         io.launch {
             try {
@@ -89,9 +69,7 @@ object SessionRepository {
         }
     }
 
-    /**
-     * Delete a session row (used by the session card and bulk delete).
-     */
+    /** Delete a session row (used by the session card and bulk delete). */
     fun delete(s: Session) {
         io.launch {
             try {
@@ -136,6 +114,7 @@ private fun Session.toEntity(): SessionEntity {
         posture = posture,
         position = position,
         wavPath = wavPath,
+        rawWavPath = rawWavPath,
         pdfPath = pdfPath,
         sex = sex,
         height = height,
@@ -156,6 +135,7 @@ private fun SessionEntity.toDomain(): Session = Session(
     posture = posture,
     position = position,
     wavPath = wavPath,
+    rawWavPath = rawWavPath,
     pdfPath = pdfPath,
     sex = sex,
     height = height,

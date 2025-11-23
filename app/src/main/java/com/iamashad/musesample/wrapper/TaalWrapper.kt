@@ -11,21 +11,28 @@ import `in`.museinc.android.surr_core.recorder.TaalRecorderState
 import `in`.museinc.android.surr_core.taalConnectionUtils.TaalConnectionBroadcastReceiver
 import `in`.museinc.android.surr_core.taalConnectionUtils.TaalConnectionListener
 import `in`.museinc.android.surr_core.utils.PreFilter
+import `in`.museinc.android.surr_core.utils.SurrUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
-import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.ln
 import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 private const val TAG = "TaalWrapper"
@@ -33,12 +40,12 @@ private const val TAG = "TaalWrapper"
 /* ------------------------------- Public types -------------------------------- */
 
 sealed class ConnectionState {
-    data object Disconnected : ConnectionState()
-    data object Connected : ConnectionState()
+    object Disconnected : ConnectionState()
+    object Connected : ConnectionState()
 }
 
 sealed class SdkRecordingState {
-    data object Idle : SdkRecordingState()
+    object Idle : SdkRecordingState()
     data class Recording(val startedAtMs: Long) : SdkRecordingState()
     data class Stopped(
         val rawPath: String?,
@@ -58,42 +65,70 @@ data class RecordConfig(
     val playbackWhileRecording: Boolean = false
 )
 
-/** FOR LOGGING & TESTING ONLY: Capture diagnostics to objectively verify filtering/amplification. */
+/**
+ * Result returned by stopRecordingAndAwaitResult
+ */
+data class RecordingResult(
+    val rawPath: String?,
+    val prefilteredPath: String?,
+    val chosenPath: String?,
+    val diagnostics: CaptureDiagnostics?
+)
+
 data class CaptureDiagnostics(
     val sampleRate: Int,
     val rmsRaw: Double?,
     val rmsPref: Double?,
-    /** Center frequencies and energies (dBFS) for RAW */
     val bandsHz: IntArray,
     val bandDbRaw: DoubleArray?,
-    /** Same bands for PREF */
     val bandDbPref: DoubleArray?,
-    /** Pref minus Raw (dB) per band; negative = attenuation by filter */
     val bandDeltaDb: DoubleArray?
 )
 
-/* --------------------------------- Wrapper ----------------------------------- */
+/**
+ * Lightweight frame representing a live stream emission
+ */
+data class LiveStreamFrame(val sampleRate: Int, val samples: FloatArray)
+
+/* ------------------------------- Wrapper ----------------------------------- */
 
 class TaalWrapper(
     private val appContext: Context,
-    private val externalScope: CoroutineScope = CoroutineScope(Dispatchers.Main)
+    /**
+     * Provide a scope for background operations (e.g., from Application or Activity).
+     * Defaults to SupervisorScope on Dispatchers.Default so library doesn't create a Main scope.
+     */
+    private val externalScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 ) {
     private val _connection = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
-    val connection: StateFlow<ConnectionState> = _connection
+    val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
 
     private val _recording = MutableStateFlow<SdkRecordingState>(SdkRecordingState.Idle)
-    val recording: StateFlow<SdkRecordingState> = _recording
+    val recording: StateFlow<SdkRecordingState> = _recording.asStateFlow()
 
     private val _recorderState =
         MutableSharedFlow<TaalRecorderState>(replay = 0, extraBufferCapacity = 1)
 
-    // Live audio + sample rate for UI/analysis
+    // Live audio + sample rate for UI/analysis (easy immediate access)
     val liveSamples: MutableStateFlow<FloatArray?> = MutableStateFlow(null)
     val sampleRateHz: MutableStateFlow<Int?> = MutableStateFlow(null)
 
+    // Flow that emits raw frames with backpressure (optional)
+    private val _liveStreamFlow =
+        MutableSharedFlow<LiveStreamFrame>(replay = 0, extraBufferCapacity = 2)
+
+    fun liveStreamFlow(): SharedFlow<LiveStreamFrame> = _liveStreamFlow.asSharedFlow()
+
+    // A lower-rate envelope flow for UI (computed in background)
+    private val _liveEnvelopeFlow =
+        MutableSharedFlow<Pair<Int, FloatArray>>(replay = 0, extraBufferCapacity = 1)
+
+    fun liveEnvelopeFlow(): SharedFlow<Pair<Int, FloatArray>> = _liveEnvelopeFlow.asSharedFlow()
+
     // Diagnostics from last completed capture
     private val _lastCaptureDiagnostics = MutableStateFlow<CaptureDiagnostics?>(null)
-    val lastCaptureDiagnostics: StateFlow<CaptureDiagnostics?> = _lastCaptureDiagnostics
+    val lastCaptureDiagnostics: StateFlow<CaptureDiagnostics?> =
+        _lastCaptureDiagnostics.asStateFlow()
 
     private var recorder: TaalRecorder? = null
     private var connReceiver: TaalConnectionBroadcastReceiver? = null
@@ -102,6 +137,9 @@ class TaalWrapper(
 
     @Volatile
     private var lastSdkState: TaalRecorderState? = null
+
+    // Default bands (same as original)
+    private val defaultBandsHz = intArrayOf(150, 300, 600, 1200, 2400)
 
     /* ---------------------------- Connection monitor --------------------------- */
 
@@ -131,7 +169,6 @@ class TaalWrapper(
         _connection.value = ConnectionState.Disconnected
     }
 
-    /** To be replaced with TAAL VID/PID filter when available. */
     fun pollConnectionNow() {
         val mgr = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
         val anyDevicePresent = mgr.deviceList.values.any()
@@ -141,6 +178,10 @@ class TaalWrapper(
 
     /* -------------------------------- Recording -------------------------------- */
 
+    /**
+     * Start a recording (non-suspending; kept for compatibility).
+     * Prefer using stopRecordingAndAwaitResult to get final paths & diagnostics.
+     */
     fun startRecording(cfg: RecordConfig) {
         val r = TaalRecorder(appContext)
         try {
@@ -160,10 +201,13 @@ class TaalWrapper(
                 r.setPreFilter(cfg.preFilter)
             }
 
+            // enable/disable live playback from device
             r.setPlayback(cfg.playbackWhileRecording)
+
             cfg.recordingTimeSec?.let { r.setRecordingTime(it) }
             cfg.preAmplificationDb?.let { r.setPreAmplification(it) }
 
+            // Info listener -> propagate state + sampleRate
             r.setOnInfoListener(object : OnInfoListener {
                 override fun onStateChange(state: TaalRecorderState) {
                     lastSdkState = state
@@ -183,20 +227,31 @@ class TaalWrapper(
             // Livestream: 16-bit LE PCM -> Float [-1, 1]
             r.setOnLiveStreamListener(object : OnLiveStreamListener {
                 override fun onNewStream(stream: ByteArray) {
-                    val n = stream.size / 2
-                    if (n <= 0) return
-                    val out = FloatArray(n)
-                    var si = 0
-                    var i = 0
-                    while (si < stream.size - 1) {
-                        val lo = stream[si].toInt() and 0xFF
-                        val hi = stream[si + 1].toInt()
-                        val s = (hi shl 8) or lo
-                        out[i] = (s.toShort().toInt() / 32768f).coerceIn(-1f, 1f)
-                        si += 2
-                        i++
+                    externalScope.launch {
+                        try {
+                            val frame =
+                                decodePcm16leToFloatFrame(stream, sampleRateHz.value ?: 44100)
+                            liveSamples.value = frame
+                            _liveStreamFlow.tryEmit(
+                                LiveStreamFrame(
+                                    sampleRateHz.value ?: 44100,
+                                    frame
+                                )
+                            )
+                            val envelope = computeEnvelope(
+                                frame,
+                                windowSize = (sampleRateHz.value ?: 44100) / 200 // ~5 ms window
+                            )
+                            _liveEnvelopeFlow.tryEmit(
+                                Pair(
+                                    sampleRateHz.value ?: 44100,
+                                    envelope
+                                )
+                            )
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "live stream decode failed: ${t.message}")
+                        }
                     }
-                    liveSamples.value = out
                 }
             })
 
@@ -212,83 +267,110 @@ class TaalWrapper(
         }
     }
 
-    fun stopRecording() {
-        val r = recorder
-        val cfg = lastConfig
-        try {
-            r?.stop()
-
-            // Resolve paths (SDK first; fallback to cfg)
-            val raw = r?.getRawAudioFilePathOrNull() ?: cfg?.rawAudioPath
-            val pref = r?.getPreFilteredAudioFilePathOrNull() ?: cfg?.preFilteredAudioPath
-
-            // Wait up to 6s for >44-byte WAV(s)
-            val deadline = SystemClock.elapsedRealtime() + 6_000
-            var rawOk = false
-            var prefOk = false
-            while (SystemClock.elapsedRealtime() < deadline) {
-                if (!prefOk && !pref.isNullOrEmpty()) {
-                    val f = File(pref); prefOk = f.exists() && f.length() > 44
-                }
-                if (!rawOk && !raw.isNullOrEmpty()) {
-                    val f = File(raw); rawOk = f.exists() && f.length() > 44
-                }
-                if (prefOk || rawOk) break
-                Thread.sleep(40)
+    /**
+     * Stop recording and await result (suspending). Returns RecordingResult with chosen path and diagnostics.
+     */
+    suspend fun stopRecordingAndAwaitResult(timeoutMs: Long = 6_000L): RecordingResult =
+        withContext(externalScope.coroutineContext) {
+            val r = recorder
+            val cfg = lastConfig
+            if (r == null) {
+                return@withContext RecordingResult(null, null, null, null)
             }
 
+            try {
+                r.stop()
+            } catch (t: Throwable) {
+                Log.w(TAG, "Exception while stopping recorder: ${t.message}")
+                runCatching { r.reset() }
+                recorder = null
+                lastConfig = null
+                return@withContext RecordingResult(null, null, null, null)
+            }
+
+            val sdkRaw = r.getRawAudioFilePathOrNull()
+            val sdkPref = r.getPreFilteredAudioFilePathOrNull()
+            val raw = sdkRaw ?: cfg?.rawAudioPath
+            val pref = sdkPref ?: cfg?.preFilteredAudioPath
+
+            val prefOkDeferred = async { waitForFileReady(pref, timeoutMs) }
+            val rawOkDeferred = async { waitForFileReady(raw, timeoutMs) }
+            val prefOk = prefOkDeferred.await()
+            val rawOk = rawOkDeferred.await()
+
             val chosen = when {
-                prefOk -> pref
-                rawOk -> raw
+                prefOk && !pref.isNullOrEmpty() -> pref
+                rawOk && !raw.isNullOrEmpty() -> raw
                 else -> null
             }
 
+            val diag = withContext(Dispatchers.Default) {
+                computeDiagnostics(raw, pref)
+            }
+
+            runCatching { r.reset() }
+            recorder = null
+            lastConfig = null
+            liveSamples.value = null
+            sampleRateHz.value = null
+            _lastCaptureDiagnostics.value = diag
             _recording.value = SdkRecordingState.Stopped(
                 rawPath = raw,
                 prefilteredPath = pref,
                 chosenPath = chosen
             )
 
-            // Compute diagnostics (off main)
-            if (!raw.isNullOrEmpty() || !pref.isNullOrEmpty()) {
-                externalScope.launch(Dispatchers.Default) {
-                    val diag = computeDiagnostics(raw, pref)
-                    _lastCaptureDiagnostics.value = diag
-                    if (diag != null) {
-                        val bands = diag.bandsHz.joinToString()
-                        val rawDb = diag.bandDbRaw?.joinToString { fmtDb(it) } ?: "—"
-                        val prefDb = diag.bandDbPref?.joinToString { fmtDb(it) } ?: "—"
-                        val deltaDb = diag.bandDeltaDb?.joinToString { fmtDb(it) } ?: "—"
-
-                        Log.i(TAG, "Capture diagnostics")
-                        Log.i(TAG, "  SR=${diag.sampleRate}, RMS raw=${fmt(diag.rmsRaw)} pref=${fmt(diag.rmsPref)}")
-                        Log.i(TAG, "  Bands (Hz): [$bands]")
-                        Log.i(TAG, "  RAW  dBFS : [$rawDb]")
-                        Log.i(TAG, "  PREF dBFS : [$prefDb]")
-                        Log.i(TAG, "  ΔdB(P-R)  : [$deltaDb]")
-                    }
-
-                }
-            }
-        } catch (t: Throwable) {
-            _recording.value = SdkRecordingState.Error(t.message ?: "Error stopping record")
-        } finally {
-            runCatching { r?.reset() }
-            recorder = null
-            lastConfig = null
-            liveSamples.value = null
-            sampleRateHz.value = null
+            RecordingResult(raw, pref, chosen, diag)
         }
-    }
 
     /* -------------------------- WAV parsing & diagnostics ----------------------- */
 
+    fun getSdkFilteredSamples(filePath: String): Pair<Int, FloatArray> {
+        val file = File(filePath)
+        if (!file.exists() || file.length() <= 44) {
+            Log.w(TAG, "getSdkFilteredSamples: File not found or is empty: $filePath")
+            return 44100 to FloatArray(0)
+        }
+
+        try {
+            val sampleRate = SurrUtils.readSampleRate(filePath)
+            val floatList = SurrUtils.getFloatBuffer(filePath)
+            val floatArray = FloatArray(floatList.size)
+            for (i in floatList.indices) floatArray[i] = floatList[i]
+            Log.i(
+                TAG,
+                "getSdkFilteredSamples: Loaded via SurrUtils SR=$sampleRate Samples=${floatArray.size}"
+            )
+            return sampleRate to floatArray
+        } catch (e: Exception) {
+            Log.w(TAG, "getSdkFilteredSamples: SurrUtils read failed, falling back: ${e.message}")
+        }
+
+        return try {
+            val wav = readWavPcm16Mono(filePath)
+            if (wav == null) {
+                Log.w(TAG, "getSdkFilteredSamples: fallback read returned null")
+                44100 to FloatArray(0)
+            } else {
+                val floats = FloatArray(wav.pcm.size)
+                for (i in wav.pcm.indices) floats[i] = wav.pcm[i].toInt() / 32768f
+                Log.i(
+                    TAG,
+                    "getSdkFilteredSamples: Fallback loaded SR=${wav.sampleRate} Samples=${floats.size}"
+                )
+                wav.sampleRate to floats
+            }
+        } catch (e2: Exception) {
+            Log.e(TAG, "getSdkFilteredSamples: Fallback failed", e2)
+            44100 to FloatArray(0)
+        }
+    }
 
     private data class WavData(
         val sampleRate: Int,
         val numChannels: Int,
         val bitsPerSample: Int,
-        val pcm: ShortArray // mono extracted (ch1) from interleaved if needed
+        val pcm: ShortArray
     )
 
     private fun readWavPcm16Mono(path: String): WavData? {
@@ -296,65 +378,66 @@ class TaalWrapper(
         if (!f.exists() || f.length() <= 44) return null
 
         FileInputStream(f).use { fis ->
-            val hdr12 = ByteArray(12)
-            if (fis.read(hdr12) != 12) return null
-            if (!hdr12.copyOfRange(0, 4).contentEquals("RIFF".toByteArray())) return null
-            if (!hdr12.copyOfRange(8, 12).contentEquals("WAVE".toByteArray())) return null
+            val all = fis.readBytes()
+            if (all.size < 44) return null
+            val bb = ByteBuffer.wrap(all).order(ByteOrder.LITTLE_ENDIAN)
 
-            var sampleRate = 0
-            var numChannels = 0
-            var bitsPerSample = 0
-            var dataSize = -1L
-            var dataStartPos = -1L
+            val riff = ByteArray(4)
+            bb.get(riff)
+            if (!riff.contentEquals("RIFF".toByteArray())) return null
+            bb.int
+            val wave = ByteArray(4)
+            bb.get(wave)
+            if (!wave.contentEquals("WAVE".toByteArray())) return null
 
-            // Iterate chunks until we find "data"
-            while (true) {
-                val chunkHdr = ByteArray(8)
-                val read = fis.read(chunkHdr)
-                if (read < 8) break // EOF or truncated
-                val id = String(chunkHdr, 0, 4)
-                val size = ByteBuffer.wrap(chunkHdr, 4, 4).order(ByteOrder.LITTLE_ENDIAN).int
-                if (size < 0) return null
+            var fmtFound = false
+            var audioFormat = 1
+            var numChannels = 1
+            var sampleRate = 44100
+            var bitsPerSample = 16
+            var dataOffset = -1
+            var dataSize = 0
 
-                when (id) {
-                    "fmt " -> {
-                        val fmt = ByteArray(size)
-                        if (fis.read(fmt) != size) return null
-                        val bb = ByteBuffer.wrap(fmt).order(ByteOrder.LITTLE_ENDIAN)
-                        val audioFormat = bb.getShort(0).toInt() and 0xFFFF
-                        numChannels = bb.getShort(2).toInt() and 0xFFFF
-                        sampleRate = bb.getInt(4)
-                        bitsPerSample = if (size >= 16) bb.getShort(14).toInt() and 0xFFFF else 16
-                        if (audioFormat != 1 /* PCM */ || bitsPerSample != 16 || numChannels < 1) {
-                            return null
-                        }
-                    }
-                    "data" -> {
-                        dataSize = size.toLong()
-                        dataStartPos = f.length() - fis.available().toLong()
-                        // We break AFTER recording location so that we can read it next.
-                        break
-                    }
-                    else -> {
-                        // Skip unknown chunk
-                        val skipped = fis.skip(size.toLong())
-                        if (skipped < size) return null
-                    }
+            while (bb.position() + 8 <= bb.capacity()) {
+                val id = ByteArray(4); bb.get(id)
+                val chunkSize = bb.int
+                val idStr = String(id)
+                if (idStr == "fmt ") {
+                    fmtFound = true
+                    audioFormat = bb.short.toInt() and 0xFFFF
+                    numChannels = bb.short.toInt() and 0xFFFF
+                    sampleRate = bb.int
+                    bb.int
+                    bb.short
+                    bitsPerSample = bb.short.toInt() and 0xFFFF
+                    val remaining = chunkSize - 16
+                    if (remaining > 0) bb.position(bb.position() + remaining)
+                } else if (idStr == "data") {
+                    dataOffset = bb.position()
+                    dataSize = chunkSize
+                    break
+                } else {
+                    bb.position(bb.position() + chunkSize)
                 }
             }
 
-            if (dataSize <= 0 || dataStartPos < 0 || sampleRate <= 0) return null
+            if (!fmtFound || dataOffset < 0 || dataSize <= 0) return null
+            if (audioFormat != 1 || bitsPerSample != 16 || numChannels < 1) return null
 
-            // Read data payload
-            val bytes = fis.readExactBytes(dataSize.toInt())
-            val totalFrames = bytes.size / (2 * numChannels) // 2 bytes per sample * channels
+            val bytesPerSample = 2
+            val totalFrames = dataSize / (bytesPerSample * numChannels)
             val pcmMono = ShortArray(totalFrames)
-            val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-            for (i in 0 until totalFrames) {
-                val firstCh = bb.short
-                // skip remaining channels, if any
-                for (c in 1 until numChannels) bb.short
-                pcmMono[i] = firstCh
+            val dataStart = dataOffset
+            val dataEnd = dataOffset + dataSize
+            var frameIdx = 0
+            var pos = dataStart
+            while (pos + 1 < dataEnd && frameIdx < totalFrames) {
+                val lo = all[pos].toInt() and 0xFF
+                val hi = all[pos + 1].toInt()
+                val s = ((hi shl 8) or lo).toShort()
+                pcmMono[frameIdx] = s
+                pos += bytesPerSample * numChannels
+                frameIdx++
             }
 
             return WavData(
@@ -366,8 +449,9 @@ class TaalWrapper(
         }
     }
 
-    // Octave-ish band centers we’ll report (Hz)
-    private val defaultBandsHz = intArrayOf(150, 300, 600, 1200, 2400)
+    /* ------------------------------- Diagnostics -------------------------------- */
+
+    private fun fmtDb(v: Double): String = String.format("%+.1f dB", v)
 
     private fun computeDiagnostics(rawPath: String?, prefPath: String?): CaptureDiagnostics? {
         val raw = rawPath?.let { readWavPcm16Mono(it) }
@@ -384,56 +468,16 @@ class TaalWrapper(
             return sqrt(acc / s.size)
         }
 
-        // Band energy in dBFS using Goertzel over small windows
-        fun bandDb(s: ShortArray?, fs: Int): DoubleArray? {
-            if (s == null || s.isEmpty()) return null
-            val N = min(4096, s.size)
-            if (N < 1024) return null
-            val twoPiOverN = 2.0 * Math.PI / N
-
-            fun powerAt(freq: Int): Double {
-                val k = (0.5 + (N * freq) / fs.toDouble()).toInt()
-                val w = twoPiOverN * k
-                val cw = kotlin.math.cos(w)
-                val sw = kotlin.math.sin(w)
-                val coeff = 2.0 * cw
-                var s0 = 0.0;
-                var s1 = 0.0;
-                var s2 = 0.0
-                for (i in 0 until N) {
-                    val x = s[i].toDouble() / 32768.0
-                    s0 = x + coeff * s1 - s2
-                    s2 = s1; s1 = s0
-                }
-                val re = s1 - s2 * cw
-                val im = s2 * sw
-                val p = re * re + im * im
-                return p / N // scale roughly
-            }
-
-            // For each center frequency, average three bins: f/√2, f, f*√2 (≈ one octave width)
-            val out = DoubleArray(defaultBandsHz.size)
-            for (bi in defaultBandsHz.indices) {
-                val fC = defaultBandsHz[bi]
-                val f1 = (fC / sqrt(2.0)).roundToInt().coerceAtLeast(10)
-                val f2 = fC
-                val f3 = (fC * sqrt(2.0)).roundToInt()
-                val p = powerAt(f1) + powerAt(f2) + powerAt(f3)
-                // dBFS-ish from power (avoid log(0))
-                out[bi] = 10.0 * ln(max(p, 1e-20)) / ln(10.0)
-            }
-            return out
-        }
-
         val rmsRaw = rms(raw?.pcm)
         val rmsPref = rms(pref?.pcm)
-        val bandsRaw = bandDb(raw?.pcm, raw?.sampleRate ?: sr)
-        val bandsPref = bandDb(pref?.pcm, pref?.sampleRate ?: sr)
+
+        val bandsRaw = raw?.let { computeBandDbGoertzel(it.pcm, it.sampleRate, defaultBandsHz) }
+        val bandsPref = pref?.let { computeBandDbGoertzel(it.pcm, it.sampleRate, defaultBandsHz) }
+
         val delta = if (bandsRaw != null && bandsPref != null) {
             DoubleArray(defaultBandsHz.size) { i -> bandsPref[i] - bandsRaw[i] }
         } else null
 
-        // Helpful log: show a couple of bands (e.g., 600 & 1200 Hz) attenuation if we have both
         if (delta != null) {
             val idx600 = defaultBandsHz.indexOf(600).takeIf { it >= 0 }
             val idx1200 = defaultBandsHz.indexOf(1200).takeIf { it >= 0 }
@@ -453,34 +497,118 @@ class TaalWrapper(
         )
     }
 
-    /* ------------------------------- Utilities --------------------------------- */
+    // ----------------------- DSP helpers (Goertzel + windowing) ------------------
 
-    private fun InputStream.readExactBytes(n: Int): ByteArray {
-        val buf = ByteArray(n)
-        var off = 0
-        while (off < n) {
-            val read = this.read(buf, off, n - off)
-            if (read < 0) break
-            off += read
+    private fun goertzelPowerDoubles(samples: DoubleArray, sampleRate: Int, targetHz: Int): Double {
+        val N = samples.size
+        if (N <= 0) return 0.0
+        val k = (0.5 + (N * targetHz) / sampleRate.toDouble()).toInt()
+        val omega = 2.0 * Math.PI * k / N
+        val coeff = 2.0 * cos(omega)
+        var q0 = 0.0
+        var q1 = 0.0
+        var q2 = 0.0
+        for (i in 0 until N) {
+            q0 = coeff * q1 - q2 + samples[i]
+            q2 = q1
+            q1 = q0
         }
-        return if (off == n) buf else buf.copyOf(off)
+        val real = q1 - q2 * cos(omega)
+        val imag = q2 * kotlin.math.sin(omega)
+        val magnitudeSquared = real * real + imag * imag
+        return magnitudeSquared / N
     }
 
-    private fun fmt(v: Double?): String = if (v == null) "--" else String.format("%.4f", v)
-    private fun fmtDb(v: Double): String = String.format("%+.1f dB", v)
+    private fun powerToDbfs(powerLinear: Double): Double {
+        val eps = 1e-20
+        val rms = sqrt(max(powerLinear, eps))
+        return 20.0 * ln(max(rms, eps)) / ln(10.0)
+    }
+
+    private fun shortArrayToWindowedDouble(samples: ShortArray): DoubleArray {
+        val N = samples.size
+        val out = DoubleArray(N)
+        if (N == 0) return out
+        for (i in 0 until N) {
+            val hann = 0.5 * (1 - cos(2.0 * Math.PI * i / (N - 1)))
+            out[i] = (samples[i].toDouble() / 32768.0) * hann
+        }
+        return out
+    }
+
+    private fun computeBandDbGoertzel(
+        samplesShort: ShortArray?,
+        sampleRate: Int,
+        centersHz: IntArray
+    ): DoubleArray? {
+        if (samplesShort == null || samplesShort.isEmpty()) return null
+        val windowed = shortArrayToWindowedDouble(samplesShort)
+        return DoubleArray(centersHz.size) { i ->
+            val p = goertzelPowerDoubles(windowed, sampleRate, centersHz[i])
+            powerToDbfs(p)
+        }
+    }
+
+    // ----------------------- Utility / streaming helpers ------------------------
+
+    private fun decodePcm16leToFloatFrame(stream: ByteArray, sampleRate: Int): FloatArray {
+        if (stream.isEmpty()) return FloatArray(0)
+        val bb = ByteBuffer.wrap(stream).order(ByteOrder.LITTLE_ENDIAN)
+        val shortCount = stream.size / 2
+        val shorts = ShortArray(shortCount)
+        bb.asShortBuffer().get(shorts)
+        val floats = FloatArray(shortCount)
+        for (i in 0 until shortCount) {
+            floats[i] = shorts[i].toInt() / 32768f
+        }
+        return floats
+    }
+
+    private fun computeEnvelope(samples: FloatArray, windowSize: Int = 128): FloatArray {
+        if (samples.isEmpty()) return FloatArray(0)
+        val N = samples.size
+        val out = FloatArray(N)
+        val w = max(1, windowSize)
+        val buf = DoubleArray(w)
+        var idx = 0
+        var filled = 0
+        for (i in 0 until N) {
+            val v = abs(samples[i].toDouble())
+            buf[idx] = v
+            idx = (idx + 1) % w
+            if (filled < w) filled++
+            var sum = 0.0
+            for (j in 0 until filled) sum += buf[j]
+            out[i] = (sum / filled).toFloat()
+        }
+        return out
+    }
+
+    private suspend fun waitForFileReady(
+        path: String?,
+        timeoutMs: Long = 6000L,
+        minBytes: Long = 44
+    ): Boolean {
+        if (path.isNullOrEmpty()) return false
+
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        while (SystemClock.elapsedRealtime() < deadline) {
+            val f = File(path)
+            if (f.exists() && f.length() > minBytes) return true
+            delay(40)
+        }
+        return false
+    }
+
+    /* ---------------------------- Reflection helpers ----------------------------- */
+
+    private fun TaalRecorder.getRawAudioFilePathOrNull(): String? =
+        runCatching {
+            this.javaClass.getMethod("getRawAudioFilePath").invoke(this) as? String
+        }.getOrNull()
+
+    private fun TaalRecorder.getPreFilteredAudioFilePathOrNull(): String? =
+        runCatching {
+            this.javaClass.getMethod("getPreFilteredAudioFilePath").invoke(this) as? String
+        }.getOrNull()
 }
-
-/* ---------------------------- Reflection helpers ----------------------------- */
-
-// Reflection helpers (SDK getters might be non-public)
-// Use instance-based reflection; avoid Class.forName to play nice with Live Edit / instrumentation.
-private fun TaalRecorder.getRawAudioFilePathOrNull(): String? =
-    runCatching {
-        this.javaClass.getMethod("getRawAudioFilePath").invoke(this) as? String
-    }.getOrNull()
-
-private fun TaalRecorder.getPreFilteredAudioFilePathOrNull(): String? =
-    runCatching {
-        this.javaClass.getMethod("getPreFilteredAudioFilePath").invoke(this) as? String
-    }.getOrNull()
-

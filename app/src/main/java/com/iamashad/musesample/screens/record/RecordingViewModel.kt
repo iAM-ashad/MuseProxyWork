@@ -3,37 +3,39 @@ package com.iamashad.musesample.screens.record
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.iamashad.musesample.model.Session
+import com.iamashad.musesample.repository.SessionRepository
 import com.iamashad.musesample.wrapper.ConnectionState
 import com.iamashad.musesample.wrapper.RecordConfig
+import com.iamashad.musesample.wrapper.RecordingResult
 import com.iamashad.musesample.wrapper.SdkRecordingState
 import com.iamashad.musesample.wrapper.TaalSdkHolder
 import `in`.museinc.android.surr_core.utils.PreFilter
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 
 /* ---------- One-off UI effects ---------- */
 
-/** Navigation signal sent when a recording stops and we have a usable WAV path. */
 sealed interface RecordingEffect {
-    data class NavigateToMetadata(val path: String?) : RecordingEffect
+    data class NavigateAfterSave(val filteredPath: String?, val rawPath: String?) : RecordingEffect
 }
 
 /* ---------- UI state ---------- */
 
-/** Top-level state for the recording button and UI. */
 enum class RecordingState { Idle, Recording, Saving, Complete }
 
 /**
  * UI-facing pre-filter options (mapped to SDK [PreFilter]).
- * These must be provided to the SDK *before* starting a recording.
  */
 enum class PreFilterOption(val label: String) {
     None("None"),
@@ -56,12 +58,6 @@ private fun PreFilterOption?.toSdk(): PreFilter? = when (this) {
 
 /**
  * ViewModel coordinating the recording lifecycle with the TAAL SDK.
- *
- * Responsibilities:
- * - Expose a simple [RecordingState] for the UI.
- * - Hold pre-start options (duration, prefilter, preamp).
- * - Translate start/stop events to the SDK and resolve the final WAV path.
- * - Emit a one-time navigation effect when saving completes successfully.
  */
 class RecordingViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -76,22 +72,25 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
     /** Duration cap in seconds; null means unlimited. */
     private val _selectedDurationSec = MutableStateFlow<Int?>(null)
     val selectedDurationSec = _selectedDurationSec.asStateFlow()
+    private var autoStopJob: Job? = null
 
     /** Options that must be applied *before* startRecording(). */
-    private val _preFilter = MutableStateFlow(PreFilterOption.None)
+    private val _preFilter = MutableStateFlow(PreFilterOption.Heart) // Default to Heart
     val preFilter = _preFilter.asStateFlow()
 
     /** Digital pre-amplification in dB (0..10). */
-    private val _preAmpDb = MutableStateFlow(3)
+    private val _preAmpDb = MutableStateFlow(0)
     val preAmpDb = _preAmpDb.asStateFlow()
 
     /** Buffered effects so navigation can’t be dropped if collectors are late. */
-    private val _effects = MutableSharedFlow<RecordingEffect>(replay = 0, extraBufferCapacity = 1)
+    private val _effects =
+        MutableSharedFlow<RecordingEffect>(replay = 0, extraBufferCapacity = 1)
     val effects: SharedFlow<RecordingEffect> = _effects
 
     /* --------- Bookkeeping for file paths --------- */
 
-    private var currentWav: File? = null
+    private var currentFilteredWav: File? = null
+    private var currentRawWav: File? = null
 
     // Paths we *asked* the SDK to use (in case getters are null on stop).
     private var lastPlannedRaw: String? = null
@@ -99,7 +98,6 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
 
     init {
         // Mirror wrapper state to our UI state.
-        // We don't navigate here; stopping/cleanup/navigation is owned by stopAndSave().
         viewModelScope.launch {
             wrapper.recording.collect { sdk ->
                 when (sdk) {
@@ -146,9 +144,6 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
 
     /**
      * Start a new recording with the current options.
-     * - Requires an active device connection.
-     * - Prepares file paths (raw + optional prefiltered).
-     * - Asks the SDK to start with [RecordConfig].
      */
     private fun startRecording() = viewModelScope.launch {
         if (wrapper.connection.value !is ConnectionState.Connected) return@launch
@@ -162,82 +157,147 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
 
         val selectedFilter = _preFilter.value.toSdk()
         val selectedPreAmp = _preAmpDb.value
-        val duration = _selectedDurationSec.value
+        val duration = _selectedDurationSec.value   // seconds or null
 
+        // cancel any previous auto-stop
+        autoStopJob?.cancel()
         _state.value = RecordingState.Recording
-        runCatching {
+
+        val startResult = runCatching {
             wrapper.startRecording(
                 RecordConfig(
                     rawAudioPath = raw,
-                    // Only provide a prefiltered path to the SDK if a filter is selected.
                     preFilteredAudioPath = if (selectedFilter != null) pre else null,
-                    recordingTimeSec = duration,
+                    recordingTimeSec = duration,           // let SDK handle duration
                     preAmplificationDb = selectedPreAmp,
                     preFilter = selectedFilter,
-                    playbackWhileRecording = false
+                    playbackWhileRecording = true          // live playback enabled
                 )
             )
-        }.onFailure {
-            // Roll back UI state on any immediate failure from the SDK.
+        }
+
+        startResult.onFailure {
             _state.value = RecordingState.Idle
+            lastPlannedRaw = null
+            lastPlannedPref = null
+            autoStopJob = null
+            return@launch
+        }
+
+        // Our own timeout as a fallback (slightly after SDK duration)
+        if (duration != null) {
+            autoStopJob = viewModelScope.launch {
+                val totalMs = duration * 1000L + 300L
+                delay(totalMs)
+                if (_state.value == RecordingState.Recording) {
+                    stopAndSave()
+                }
+            }
+        } else {
+            autoStopJob = null
         }
     }
 
     /**
-     * Stop the SDK, wait for a final state, and resolve a usable WAV path.
-     * Path resolution priority:
-     *   1) wrapper-chosen path (verified)
-     *   2) wrapper prefiltered path
-     *   3) wrapper raw path
-     *   4) planned prefiltered path
-     *   5) planned raw path
-     *
-     * Emits [RecordingEffect.NavigateToMetadata] when a file with >44B exists.
+     * Stop the SDK, wait for a final result (suspend), and resolve both usable WAV paths.
      */
     private fun stopAndSave() = viewModelScope.launch {
+        autoStopJob?.cancel()
+        autoStopJob = null
+
         _state.value = RecordingState.Saving
 
-        // Stop on IO to avoid blocking main
-        withContext(Dispatchers.IO) { wrapper.stopRecording() }
-
-        // Await terminal state from the wrapper (Stopped/Error) with a timeout.
-        val result: SdkRecordingState? = withTimeoutOrNull(5_000) {
-            wrapper.recording.first { it is SdkRecordingState.Stopped || it is SdkRecordingState.Error }
+        // Stop and await result using the suspend API on IO dispatcher
+        val result: RecordingResult? = withContext(Dispatchers.IO) {
+            runCatching {
+                wrapper.stopRecordingAndAwaitResult()
+            }.getOrNull()
         }
 
-        // Choose the best candidate path.
-        val candidateOrder: List<String?> = when (result) {
-            is SdkRecordingState.Stopped -> listOf(
-                result.chosenPath,
-                result.prefilteredPath,
-                result.rawPath,
-                lastPlannedPref,
-                lastPlannedRaw
-            )
+        // Determine the best final file paths (prefer SDK-provided values; fall back to planned)
+        val finalFilteredPath: String?
+        val finalRawPath: String?
 
-            else -> listOf(lastPlannedPref, lastPlannedRaw)
+        if (result != null) {
+            finalFilteredPath = result.prefilteredPath ?: lastPlannedPref
+            finalRawPath = result.rawPath ?: lastPlannedRaw
+        } else {
+            finalFilteredPath = lastPlannedPref
+            finalRawPath = lastPlannedRaw
         }
 
-        val finalPath = withContext(Dispatchers.IO) {
-            candidateOrder.firstOrNull { p ->
-                p?.let { File(it).let { f -> f.exists() && f.length() > 44 } } == true
-            }
-        }
-
-        // Clean up stale planned paths.
+        // Clear planned paths so they don't linger for next capture
         lastPlannedPref = null
         lastPlannedRaw = null
 
-        if (finalPath != null) {
-            currentWav = File(finalPath)
-            _effects.emit(RecordingEffect.NavigateToMetadata(finalPath))
+        // Validate file existence and minimal size
+        val filteredFile = finalFilteredPath?.let { File(it) }
+        val rawFile = finalRawPath?.let { File(it) }
+
+        val filteredOk = filteredFile?.exists() == true && filteredFile.length() > 44
+        val rawOk = rawFile?.exists() == true && rawFile.length() > 44
+
+        // Decide what to navigate with depending on whether a filter was requested
+        val filterRequested = _preFilter.value.toSdk() != null
+
+        val navFilteredPath: String?
+        val navRawPath: String?
+
+        if (filterRequested) {
+            if (filteredOk && rawOk) {
+                navFilteredPath = finalFilteredPath
+                navRawPath = finalRawPath
+            } else {
+                navFilteredPath = null
+                navRawPath = null
+            }
+        } else {
+            if (rawOk) {
+                navFilteredPath = finalRawPath
+                navRawPath = finalRawPath
+            } else {
+                navFilteredPath = null
+                navRawPath = null
+            }
+        }
+
+        if (navFilteredPath != null) {
+            currentFilteredWav = File(navFilteredPath)
+            currentRawWav = navRawPath?.let { File(it) }
+
+            // Unique placeholder ID so sessions never overwrite each other
+            val placeholderId = "REC-${System.currentTimeMillis()}"
+
+            val timestamp = LocalDateTime.now()
+                .format(DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm"))
+
+            val minimalSession = Session(
+                patientName = "",
+                patientId = placeholderId,
+                age = "",
+                sex = "",
+                height = "",
+                weight = "",
+                bmi = "",
+                sessionStart = timestamp,
+                deviceModel = "",
+                notes = "",
+                posture = "",
+                position = "",
+                wavPath = navFilteredPath,
+                rawWavPath = navRawPath ?: navFilteredPath,
+                pdfPath = null
+            )
+
+            SessionRepository.add(minimalSession)
+
+            _effects.emit(RecordingEffect.NavigateAfterSave(navFilteredPath, navRawPath))
             _state.value = RecordingState.Idle
         } else {
-            // No file materialized; return to Idle without navigation.
             _state.value = RecordingState.Idle
         }
     }
 
-    /** Expose the last confirmed path in case the UI needs it after navigation. */
-    fun lastWavPath(): String? = currentWav?.absolutePath
+    fun lastWavPath(): String? = currentFilteredWav?.absolutePath
+    fun lastRawWavPath(): String? = currentRawWav?.absolutePath
 }

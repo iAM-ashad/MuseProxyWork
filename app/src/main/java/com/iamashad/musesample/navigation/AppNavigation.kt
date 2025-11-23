@@ -19,18 +19,6 @@ import com.iamashad.musesample.screens.record.RecordingScreen
 import com.iamashad.musesample.screens.record.RecordingViewModel
 import com.iamashad.musesample.screens.session.SessionListScreen
 
-/**
- * App-level navigation graph with lightweight cross-fade transitions.
- *
- * Destinations:
- *  - HOME → device connection + entry point.
- *  - RECORD → live capture UI.
- *  - META → form to save session metadata (accepts optional wav path).
- *  - SESSIONS → session history list.
- *
- * ViewModels are owned by the caller (activity) and passed down so screens
- * can share state across destinations (e.g., Recording → Metadata).
- */
 @Composable
 fun AppNavigation(
     homeViewModel: HomeViewModel,
@@ -39,7 +27,6 @@ fun AppNavigation(
 ) {
     val nav: NavHostController = rememberNavController()
 
-    // enter exit fade animations
     val enter = fadeIn(animationSpec = tween(durationMillis = 220, delayMillis = 90))
     val exit = fadeOut(animationSpec = tween(durationMillis = 90))
 
@@ -52,45 +39,67 @@ fun AppNavigation(
         popExitTransition = { exit }
     ) {
         composable(Routes.HOME) {
-            HomeScreen(nav, homeViewModel)
+            HomeScreen(navController = nav, viewModel = homeViewModel)
         }
 
         composable(Routes.RECORD) {
             RecordingScreen(
                 vm = recordingViewModel,
-                onStopAndSave = { wav ->
-                    // Accept path from VM if callback path is null.
-                    val safe = wav ?: recordingViewModel.lastWavPath()
-                    if (!safe.isNullOrEmpty()) {
-                        val encoded = Uri.encode(safe)
-                        nav.navigate("${Routes.META}?wav=$encoded")
+                onStopAndSave = { filteredPath, rawPath ->
+                    // We *could* use the paths here for debugging, but the VM has
+                    // already inserted a DB row. Just navigate to Sessions.
+                    nav.navigate(Routes.SESSIONS) {
+                        // Optional: clear intermediate back stack so Back goes home.
+                        popUpTo(Routes.HOME) { inclusive = false }
                     }
                 },
                 onCancel = { nav.popBackStack() }
             )
         }
 
-        // Metadata route accepts a nullable WAV path.
+        // Metadata route accepts a WAV path and raw WAV path
         composable(
-            route = "${Routes.META}?wav={wav}",
+            route = "${Routes.META}?wav={wav}&rawWav={rawWav}",
             arguments = listOf(
                 navArgument("wav") {
                     type = NavType.StringType
                     nullable = true
                     defaultValue = null
+                },
+                navArgument("rawWav") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
                 }
             )
-        ) { backStack ->
-            val wav = backStack.arguments?.getString("wav")?.let(Uri::decode).orEmpty()
+        ) { backStackEntry ->
+            val wav = backStackEntry.arguments
+                ?.getString("wav")
+                ?.let(Uri::decode)
+                .orEmpty()
+
+            val rawWav = backStackEntry.arguments
+                ?.getString("rawWav")
+                ?.let(Uri::decode)
+                .orEmpty()
+
             MetadataScreen(
                 wavPath = wav,
+                rawWavPath = rawWav,
                 onSaved = { nav.navigate(Routes.SESSIONS) },
                 vm = metadataViewModel
             )
         }
 
         composable(Routes.SESSIONS) {
-            SessionListScreen(onBack = { nav.popBackStack() })
+            SessionListScreen(
+                onBack = { nav.navigate(Routes.HOME) },
+                onEditMetadataAndGeneratePdf = { session ->
+                    val encodedFiltered = Uri.encode(session.wavPath)
+                    val encodedRaw = Uri.encode(session.rawWavPath)
+                    nav.navigate("${Routes.META}?wav=$encodedFiltered&rawWav=$encodedRaw")
+                }
+            )
         }
     }
 }

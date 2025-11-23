@@ -24,7 +24,12 @@ suspend fun runSegmentationOverClip(
     if (windowed.windows.isEmpty()) return@withContext emptyList()
 
     // prepare meta vector once (used for all windows)
-    val metaVec = if (datasetFlag == 1L && metaFromReport != null) mapPcgMetaToModelMeta(metaFromReport) else floatArrayOf(0f, 0f, 0f)
+    val metaVec =
+        if (datasetFlag == 1L && metaFromReport != null) mapPcgMetaToModelMeta(metaFromReport) else floatArrayOf(
+            0f,
+            0f,
+            0f
+        )
 
     val model = SegmentationModel(context)
     val windowLabels = ArrayList<IntArray>(windowed.windows.size)

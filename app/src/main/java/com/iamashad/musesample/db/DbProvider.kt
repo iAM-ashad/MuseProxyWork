@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import com.iamashad.musesample.db.AppDatabase.Companion.MIGRATION_1_2
 import com.iamashad.musesample.security.DbKeyStore
 import com.iamashad.musesample.utils.TAG_MUSE_DB
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
@@ -21,8 +22,8 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
  * - No destructive migration on downgrade (fails fast instead of silently wiping data).
  *
  * Usage:
- *   val db = DbProvider.get(context)
- *   val dao = db.sessionDao()
+ * val db = DbProvider.get(context)
+ * val dao = db.sessionDao()
  */
 object DbProvider {
 
@@ -60,6 +61,7 @@ object DbProvider {
         val db = Room.databaseBuilder(context, AppDatabase::class.java, dbFile.absolutePath)
             .openHelperFactory(factory)                              // <-- encryption hook
             .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
+            .addMigrations(MIGRATION_1_2) // <-- ADDED MIGRATION
             .fallbackToDestructiveMigrationOnDowngrade(false)
             .build()
 
